@@ -64,8 +64,14 @@ data class StakePolicy(
     val fourBetValueEquity: Float = 0.5f,
     /** AKo / AKs are always value 4bets / cold 4bets up to this effective stack (bb). */
     val akValueMaxStackBb: Double = 150.0,
-    /** If true the override also requires villain to over-fold vs MDF: P(fold) > 1 − MDF. */
+    /** If true the override also requires the main villain to over-fold vs MDF: P(fold) > 1 − MDF. */
     val bluffExemptRequiresOverfold: Boolean = true,
+    /**
+     * Pure-exploit override (3bet / squeeze nodes): EV(raise) >= massiveExploitEvBb against a main villain
+     * folding at least massiveOverfoldMargin above 1 − MDF executes the raise regardless of BlockerFactor.
+     */
+    val massiveExploitEvBb: Double = 1.10,
+    val massiveOverfoldMargin: Double = 0.03,
 ) {
     companion object {
         fun of(stake: Stake): StakePolicy = when (stake) {

@@ -38,6 +38,24 @@ object BluffBudget {
     fun exemptThreshold(s: Scenario, policy: StakePolicy): Double =
         if (s == Scenario.VS_RFI || s == Scenario.SQUEEZE) policy.bluffExemptEvBb else Double.POSITIVE_INFINITY
 
+    /**
+     * Hands that bypass the cap at 3bet / squeeze nodes:
+     *  - blocker override: BlockerFactor < 1, EV >= bluffExemptEvBb, (optionally) main villain over-folds vs MDF;
+     *  - pure-exploit override: EV >= massiveExploitEvBb and main villain over-folds by massiveOverfoldMargin.
+     */
+    fun capExempt(s: Scenario, t: EvTerms, policy: StakePolicy): Boolean {
+        if (s != Scenario.VS_RFI && s != Scenario.SQUEEZE) return false
+        val blocker = t.blockerFactor < 1.0 && t.ev >= policy.bluffExemptEvBb &&
+            (!policy.bluffExemptRequiresOverfold || t.overfolds())
+        val massive = t.ev >= policy.massiveExploitEvBb && t.overfolds(policy.massiveOverfoldMargin)
+        return blocker || massive
+    }
+
+    /** Priority inside the cap at 4bet / cold 4bet nodes: blocker bluffs with EV >= bluffExemptFourBetEvBb. */
+    fun capPriority(s: Scenario, t: EvTerms, policy: StakePolicy): Boolean =
+        isFourBetNode(s) && t.blockerFactor < 1.0 && t.ev >= policy.bluffExemptFourBetEvBb &&
+            (!policy.bluffExemptRequiresOverfold || t.overfolds())
+
     /** Priority inside the cap (4bet / cold 4bet nodes only); +∞ = none. */
     fun priorityThreshold(s: Scenario, policy: StakePolicy): Double =
         if (isFourBetNode(s)) policy.bluffExemptFourBetEvBb else Double.POSITIVE_INFINITY

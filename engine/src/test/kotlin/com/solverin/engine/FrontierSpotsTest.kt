@@ -21,21 +21,7 @@ class FrontierSpotsTest {
     private val engine = EngineTest.engine
     private fun h(s: String) = HandClass.parse(s)
 
-    /** Every action taken is the max-EV one under the stake policy, except bluffs removed by the cap. */
-    private fun assertPolicyConsistent(a: SpotAnalysis, ctx: PreflopContext) {
-        val p = ctx.policy
-        for (x in 0 until HandClass.COUNT) {
-            val d = a.decision(x)
-            val call = if (d.evCall.isNaN()) Double.NEGATIVE_INFINITY else d.evCall - p.callEdgeBb
-            val raise = if (d.evRaise.isNaN()) Double.NEGATIVE_INFINITY else d.evRaise - p.raiseEdgeBb
-            val best = maxOf(0.0, call, raise)
-            if (d.mix.raise > 0f) assertTrue(raise >= best - p.mixBandBb - 1e-9, "${HandClass.name(x)} raises below max EV")
-            if (d.mix.call > 0f) assertTrue(call >= best - p.mixBandBb - 1e-9 || (raise >= best - 1e-9 && !d.isValue),
-                "${HandClass.name(x)} calls below max EV")
-            if (d.mix.fold >= 0.999f && best > p.mixBandBb) assertTrue(raise == best && !d.isValue,
-                "${HandClass.name(x)} folds a +EV non-bluff option")
-        }
-    }
+    private fun assertPolicyConsistent(a: SpotAnalysis, ctx: PreflopContext) = Invariants.all(a, ctx)
 
     @Test fun spot1_btnVsCoOpenWithActiveBlindsBehind() {
         val k = SpotKey.of(Scenario.VS_RFI, BTN, CO)

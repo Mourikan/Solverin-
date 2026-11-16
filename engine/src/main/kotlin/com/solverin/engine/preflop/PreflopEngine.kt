@@ -113,21 +113,15 @@ class PreflopEngine(
         val valueMark = FloatArray(n) { h ->
             if (BluffBudget.isValue(key.scenario, h, valueEq[h], ctx.policy, ctx.effectiveStackBb)) 1f else 0f
         }
+        var capExempt: BooleanArray? = null
         if (ctx.policy.bluffCap) {
             val fold = first?.let { BluffBudget.foldShare(it.response) } ?: 1.0
             val p = ctx.policy
-            fun blockerBluffs(threshold: Double): BooleanArray? =
-                if (threshold.isInfinite()) null else raiseTerms?.let { rt ->
-                    BooleanArray(n) { h ->
-                        val t = rt[h]
-                        t.blockerFactor < 1.0 && t.ev >= threshold &&
-                            (!p.bluffExemptRequiresOverfold || t.pFold > 1.0 - t.mdf)
-                    }
-                }
+            capExempt = raiseTerms?.let { rt -> BooleanArray(n) { h -> BluffBudget.capExempt(key.scenario, rt[h], p) } }
+            val priority = raiseTerms?.let { rt -> BooleanArray(n) { h -> BluffBudget.capPriority(key.scenario, rt[h], p) } }
             BluffBudget.apply(
                 BluffBudget.ratio(key.scenario, fold), b.raise, b.call, valueMark, surplus, fallbackCall,
-                exempt = blockerBluffs(BluffBudget.exemptThreshold(key.scenario, p)),
-                priority = blockerBluffs(BluffBudget.priorityThreshold(key.scenario, p)),
+                exempt = capExempt, priority = priority,
             )
         }
 
@@ -158,7 +152,11 @@ class PreflopEngine(
                 SpotAnalysis.frequency(strategy, reach(key, ctx)) { s, h -> s.call(h) }
             }
         else null
-        return SpotAnalysis(key, strategy, callTerms, raiseTerms, valueEq, foldEq, bd, cc, sprCall, sprRaise) { reach(key, ctx) }
+        val bluffCap = if (ctx.policy.bluffCap && raiseNode != null) {
+            BluffBudget.ratio(key.scenario, first?.let { BluffBudget.foldShare(it.response) } ?: 1.0)
+        } else Double.POSITIVE_INFINITY
+        return SpotAnalysis(key, strategy, callTerms, raiseTerms, valueEq, foldEq, bd, cc, sprCall, sprRaise,
+            capExempt = capExempt, bluffRatio = bluffCap) { reach(key, ctx) }
     }
 
     /** Persists every cached matrix (for a given context) into a compact repository. */

@@ -35,6 +35,12 @@ data class EvTerms(
     val calledEv: Double,
     val ev: Double,
 ) {
+    /** Main villain's own P(fold) = 1 − MDF·BF·TM (card removal applied). */
+    val mainFold: Double get() = (1.0 - mdf * blockerFactor * tendency).coerceIn(0.0, 1.0)
+
+    /** Main villain over-folds vs MDF by [margin]: P(fold) > 1 − MDF + margin. */
+    fun overfolds(margin: Double = 0.0): Boolean = mdf > 0.0 && mainFold > 1.0 - mdf + margin
+
     /** Called-branch value: EQ·R·PotTotal − Investment − Rake + EV_implied. */
     val calledBranch: Double get() = minOf(equity * realization, PreflopMathEngine.MAX_EQR) * potTotal - investment - rake + implied
 }

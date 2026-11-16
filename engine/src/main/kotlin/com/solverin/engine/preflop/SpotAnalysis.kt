@@ -23,6 +23,10 @@ class SpotAnalysis(
     val sprCall: Double,
     /** Projected flop SPR if hero raises and is called (NaN if no raise option). */
     val sprRaise: Double,
+    /** Hands that bypassed the bluff cap (blocker / pure-exploit overrides); null = none. */
+    val capExempt: BooleanArray? = null,
+    /** Bluff:value ratio applied at this node (+∞ = uncapped). */
+    val bluffRatio: Double = Double.POSITIVE_INFINITY,
     private val reachProvider: () -> FloatArray?,
 ) {
     /** Hero's range reaching this node (class weights); null = all hands. Resolved lazily (parent node). */
