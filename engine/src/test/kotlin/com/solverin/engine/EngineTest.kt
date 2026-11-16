@@ -13,6 +13,7 @@ import com.solverin.engine.math.Realization
 import com.solverin.engine.model.NodeLock
 import com.solverin.engine.model.NodeLocks
 import com.solverin.engine.model.VillainNode
+import com.solverin.engine.model.VillainProfile
 import com.solverin.engine.preflop.ColdCallVerdict
 import com.solverin.engine.preflop.PreflopContext
 import com.solverin.engine.preflop.PreflopEngine
@@ -94,7 +95,7 @@ class EngineTest {
         val sc = Realization.compute(h("JTs"), open, true, false, 15.0)
         val trash = Realization.compute(h("J2o"), open, true, false, 15.0)
         assertTrue(sc.playability > 0 && trash.playability < 0 && sc.value > trash.value)
-        assertEquals(sc.basePos * sc.initiative * (1 + sc.playability - sc.domination), sc.value.toDouble(), 1e-5)
+        assertEquals(minOf(Realization.MAX_R, sc.basePos * sc.initiative * (1 + sc.playability - sc.domination)), sc.value.toDouble(), 1e-5)
         assertEquals(0.0, imp.ev(h("77"), open, 6.0, 0.0, true))
     }
 
@@ -272,5 +273,30 @@ class EngineTest {
             if (t.pReraise > 0) assertEquals(-t.investment + five.continuationValue(x), t.evVsReraise, 1e-9)
         }
         assertNull(rfi.reach)
+    }
+
+    @Test fun populationCalibration() {
+        for (st in listOf(Stake.NL50, Stake.NL100, Stake.NL200)) {
+            val p = VillainProfile.population(st)
+            val combined = p.defense(SB, BTN).first + (1 - p.defense(SB, BTN).first) * p.defense(BB, BTN).first
+            assertTrue(combined in 0.11..0.14, "$st blind 3bet vs BTN $combined")
+        }
+        val nl2 = VillainProfile.population(Stake.NL2)
+        assertTrue(nl2.defense(BB, BTN).first <= 0.05 && nl2.threeBetValueShare >= 0.9)
+        val bbVsUtg = nl2.defense(BB, UTG); val bbVsBtn = nl2.defense(BB, BTN)
+        assertTrue((bbVsUtg.first + bbVsUtg.second) / (bbVsBtn.first + bbVsBtn.second) > 0.85, "NL2 blinds barely tighten vs UTG")
+        val utg = engine.strategy(SpotKey.of(Scenario.RFI, UTG), PreflopContext(Stake.NL2)).raiseFrequency()
+        assertTrue(utg in 0.12..0.20, "NL2 UTG $utg")
+        val btn = engine.strategy(SpotKey.of(Scenario.RFI, BTN), nl50).raiseFrequency()
+        assertTrue(btn in 0.42..0.50, "NL50 BTN $btn")
+    }
+
+    @Test fun bluffCapFollowsNodeLocks() {
+        val k = SpotKey.of(Scenario.VS_RFI, CO, UTG)
+        val foldy = NodeLocks.NONE.with(VillainNode.VS_3BET, UTG, NodeLock(raise = 0.05, call = 0.20), versus = CO)
+        val sticky = NodeLocks.NONE.with(VillainNode.VS_3BET, UTG, NodeLock(raise = 0.07, call = 0.55), versus = CO)
+        val a = engine.analyze(k, nl50.copy(locks = foldy)).raiseFrequency()
+        val b = engine.analyze(k, nl50.copy(locks = sticky)).raiseFrequency()
+        assertTrue(a > b, "3bet vs over-folder $a <= vs sticky $b")
     }
 }

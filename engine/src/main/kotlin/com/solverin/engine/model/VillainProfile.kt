@@ -2,6 +2,7 @@ package com.solverin.engine.model
 
 import com.solverin.engine.core.Position
 import com.solverin.engine.core.Stake
+import kotlin.math.pow
 
 /**
  * Opponent tendencies (conditional frequencies, 0..1). Population priors per stake;
@@ -24,6 +25,11 @@ data class VillainProfile(
     /** 1.0 = linear (pure value), 0.5 = fully polarized. */
     val threeBetValueShare: Double,
     val fourBetValueShare: Double,
+    /**
+     * How strongly defense tightens vs earlier opens: defense × (rfi(opener) / rfi(reference))^sensitivity.
+     * 0.35 = position-aware regs, ~0.15 = micro-stakes pool that defends almost the same vs any position.
+     */
+    val positionSensitivity: Double = 0.5,
 ) {
     fun rfi(p: Position): Double = when (p) {
         Position.UTG -> rfiUtg; Position.HJ -> rfiHj; Position.CO -> rfiCo
@@ -37,7 +43,7 @@ data class VillainProfile(
             Position.SB -> Triple(sb3Bet, sbCall, rfiBtn)
             else -> Triple(cold3Bet, coldCall, rfiCo)
         }
-        var k = kotlin.math.sqrt(rfi(opener) / ref)
+        var k = (rfi(opener) / ref).pow(positionSensitivity)
         if (opener == Position.SB && defender == Position.BB) k = maxOf(k, 1.1)
         val t2 = t * k; val c2 = c * k
         val s = t2 + c2
@@ -45,19 +51,60 @@ data class VillainProfile(
     }
 
     companion object {
-        private fun p(r: DoubleArray, cc: Double, c3: Double, sbc: Double, sb3: Double, bbc: Double, bb3: Double,
-                      f3: Double, b4: Double, f4: Double, b5: Double, f5: Double, sq: Double, cfs: Double,
-                      v3: Double, v4: Double) =
-            VillainProfile(r[0], r[1], r[2], r[3], r[4], cc, c3, sbc, sb3, bbc, bb3, f3, b4, f4, b5, f5, sq, cfs, v3, v4)
-
+        /**
+         * Population priors. Blind 3bet vs BTN: SB + BB ≈ 8.5% at NL2 (value only), ≈ 12% at NL50, ≈ 14% at NL200.
+         * Micro pools flat a lot, 3bet little and almost only for value, and barely tighten vs early opens.
+         */
         fun population(stake: Stake): VillainProfile = when (stake) {
-            Stake.NL2 -> p(doubleArrayOf(.14, .17, .23, .36, .30), .09, .045, .14, .06, .45, .08, .50, .05, .42, .25, .30, .04, .70, .85, .95)
-            Stake.NL5 -> p(doubleArrayOf(.15, .18, .25, .38, .33), .085, .05, .13, .07, .44, .09, .52, .055, .45, .24, .32, .045, .72, .80, .90)
-            Stake.NL10 -> p(doubleArrayOf(.15, .19, .26, .40, .35), .08, .055, .12, .08, .43, .10, .54, .06, .48, .23, .34, .05, .74, .75, .85)
-            Stake.NL25 -> p(doubleArrayOf(.16, .20, .27, .42, .37), .075, .06, .11, .09, .42, .11, .55, .065, .50, .22, .36, .055, .76, .70, .80)
-            Stake.NL50 -> p(doubleArrayOf(.16, .20, .27, .43, .39), .07, .065, .10, .10, .41, .12, .56, .07, .52, .22, .38, .06, .78, .65, .80)
-            Stake.NL100 -> p(doubleArrayOf(.17, .21, .28, .44, .40), .065, .07, .09, .11, .40, .13, .56, .075, .53, .21, .40, .065, .80, .62, .75)
-            Stake.NL200 -> p(doubleArrayOf(.17, .21, .28, .45, .42), .06, .075, .08, .12, .40, .13, .55, .08, .54, .21, .42, .07, .80, .60, .72)
+            Stake.NL2 -> VillainProfile(
+                rfiUtg = .14, rfiHj = .17, rfiCo = .23, rfiBtn = .36, rfiSb = .30,
+                coldCall = .14, cold3Bet = .030, sbCall = .22, sb3Bet = .045, bbCall = .56, bb3Bet = .040,
+                foldTo3Bet = .45, fourBet = .040, foldTo4Bet = .40, fiveBet = .25, foldTo5Bet = .25,
+                squeeze = .025, callerFoldToSqueeze = .62, threeBetValueShare = .95, fourBetValueShare = .95,
+                positionSensitivity = .15,
+            )
+            Stake.NL5 -> VillainProfile(
+                rfiUtg = .15, rfiHj = .18, rfiCo = .25, rfiBtn = .38, rfiSb = .33,
+                coldCall = .12, cold3Bet = .035, sbCall = .18, sb3Bet = .050, bbCall = .55, bb3Bet = .045,
+                foldTo3Bet = .48, fourBet = .045, foldTo4Bet = .43, fiveBet = .24, foldTo5Bet = .28,
+                squeeze = .030, callerFoldToSqueeze = .66, threeBetValueShare = .90, fourBetValueShare = .90,
+                positionSensitivity = .20,
+            )
+            Stake.NL10 -> VillainProfile(
+                rfiUtg = .15, rfiHj = .19, rfiCo = .26, rfiBtn = .40, rfiSb = .35,
+                coldCall = .10, cold3Bet = .045, sbCall = .14, sb3Bet = .055, bbCall = .53, bb3Bet = .050,
+                foldTo3Bet = .52, fourBet = .055, foldTo4Bet = .47, fiveBet = .23, foldTo5Bet = .32,
+                squeeze = .040, callerFoldToSqueeze = .70, threeBetValueShare = .82, fourBetValueShare = .85,
+                positionSensitivity = .28,
+            )
+            Stake.NL25 -> VillainProfile(
+                rfiUtg = .16, rfiHj = .20, rfiCo = .27, rfiBtn = .42, rfiSb = .37,
+                coldCall = .085, cold3Bet = .055, sbCall = .11, sb3Bet = .060, bbCall = .50, bb3Bet = .055,
+                foldTo3Bet = .54, fourBet = .060, foldTo4Bet = .50, fiveBet = .22, foldTo5Bet = .35,
+                squeeze = .050, callerFoldToSqueeze = .74, threeBetValueShare = .75, fourBetValueShare = .80,
+                positionSensitivity = .35,
+            )
+            Stake.NL50 -> VillainProfile(
+                rfiUtg = .16, rfiHj = .20, rfiCo = .27, rfiBtn = .43, rfiSb = .39,
+                coldCall = .070, cold3Bet = .060, sbCall = .09, sb3Bet = .065, bbCall = .52, bb3Bet = .060,
+                foldTo3Bet = .55, fourBet = .065, foldTo4Bet = .52, fiveBet = .22, foldTo5Bet = .38,
+                squeeze = .055, callerFoldToSqueeze = .77, threeBetValueShare = .70, fourBetValueShare = .78,
+                positionSensitivity = .35,
+            )
+            Stake.NL100 -> VillainProfile(
+                rfiUtg = .17, rfiHj = .21, rfiCo = .28, rfiBtn = .44, rfiSb = .40,
+                coldCall = .065, cold3Bet = .065, sbCall = .08, sb3Bet = .070, bbCall = .53, bb3Bet = .065,
+                foldTo3Bet = .56, fourBet = .070, foldTo4Bet = .53, fiveBet = .21, foldTo5Bet = .40,
+                squeeze = .060, callerFoldToSqueeze = .79, threeBetValueShare = .66, fourBetValueShare = .74,
+                positionSensitivity = .35,
+            )
+            Stake.NL200 -> VillainProfile(
+                rfiUtg = .17, rfiHj = .21, rfiCo = .28, rfiBtn = .45, rfiSb = .42,
+                coldCall = .060, cold3Bet = .070, sbCall = .07, sb3Bet = .072, bbCall = .54, bb3Bet = .068,
+                foldTo3Bet = .55, fourBet = .075, foldTo4Bet = .54, fiveBet = .21, foldTo5Bet = .42,
+                squeeze = .065, callerFoldToSqueeze = .80, threeBetValueShare = .62, fourBetValueShare = .70,
+                positionSensitivity = .35,
+            )
         }
     }
 }

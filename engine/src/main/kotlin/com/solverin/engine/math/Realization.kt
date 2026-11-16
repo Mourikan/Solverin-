@@ -6,7 +6,7 @@ import kotlin.math.pow
 /**
  * R_real = BasePos(IP/OOP) · InitiativeFactor · (1 + PlayabilityScore(hand) − DominationPenalty(hand, range))
  *
- *  InitiativeFactor  = aggressor 1.08 | caller by pot level: single-raised 0.97, 3bet pot 0.88, 4bet+ pot 0.82
+ *  InitiativeFactor  = aggressor 1.00 | caller by pot level: single-raised 0.97, 3bet pot 0.88, 4bet+ pot 0.82
  *  PlayabilityScore  = PLAY_WEIGHT · (playability(h, SPR) − combo-weighted mean playability at SPR)
  *  DominationPenalty = DOM_WEIGHT · share of villain range dominating hero
  *  SPR < LOW_SPR pulls R → 1 (stacks go in, equity realizes); each extra player × MULTIWAY_DECAY.
@@ -14,11 +14,11 @@ import kotlin.math.pow
 object Realization {
     const val BASE_IP = 1.06
     const val BASE_OOP = 0.86
-    const val INITIATIVE_AGGRESSOR = 1.08
+    const val INITIATIVE_AGGRESSOR = 1.00
     const val INITIATIVE_CALLER = 0.97
     const val INITIATIVE_CALLER_3BET_POT = 0.88
     const val INITIATIVE_CALLER_4BET_POT = 0.82
-    const val PLAY_WEIGHT = 0.35
+    const val PLAY_WEIGHT = 0.7
     const val DOM_WEIGHT = 0.25
     const val MULTIWAY_DECAY = 0.88
     const val LOW_SPR = 1.5

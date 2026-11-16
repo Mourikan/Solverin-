@@ -1,7 +1,8 @@
 package com.solverin.engine.preflop
 
 import com.solverin.engine.core.HandClass
-import com.solverin.engine.model.VillainProfile
+import com.solverin.engine.eval.CardRemoval
+import com.solverin.engine.model.Partition
 import com.solverin.engine.range.Scenario
 import kotlin.math.pow
 
@@ -23,21 +24,32 @@ object BluffBudget {
         Scenario.VS_5BET -> 0.0
     }
 
-    private fun foldPair(s: Scenario, p: VillainProfile): Pair<Double, Double> = when (s) {
-        Scenario.RFI -> 1.0 to 1.0
-        Scenario.VS_RFI -> p.foldTo3Bet to 0.55
-        Scenario.SQUEEZE -> (p.foldTo3Bet + 0.05) to 0.62
-        Scenario.VS_3BET -> p.foldTo4Bet to 0.50
-        Scenario.VS_4BET -> p.foldTo5Bet to 0.35
-        Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> p.foldTo4Bet to 0.50
-        Scenario.VS_5BET -> 1.0 to 1.0
+    /** Equilibrium-reference fold rate of the first opponent at each node. */
+    fun referenceFold(s: Scenario): Double = when (s) {
+        Scenario.RFI -> 1.0
+        Scenario.VS_RFI -> 0.55
+        Scenario.SQUEEZE -> 0.62
+        Scenario.VS_3BET -> 0.50
+        Scenario.VS_4BET -> 0.35
+        Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> 0.50
+        Scenario.VS_5BET -> 1.0
     }
 
-    fun ratio(s: Scenario, p: VillainProfile): Double {
+    /**
+     * Bluff:value cap. [villainFold] = first opponent's actual (unblocked) fold share at the node,
+     * profile or node-locked.
+     */
+    fun ratio(s: Scenario, villainFold: Double): Double {
         val b = base(s)
         if (b.isInfinite()) return b
-        val (f, ref) = foldPair(s, p)
-        return b * (f / ref).pow(2).coerceIn(0.3, 3.0)
+        return b * (villainFold / referenceFold(s)).pow(3).coerceIn(0.25, 5.0)
+    }
+
+    /** Unblocked fold share of a response partition. */
+    fun foldShare(response: Partition): Double {
+        val f = CardRemoval.total(response.fold)
+        val all = f + CardRemoval.total(response.call) + CardRemoval.total(response.raise)
+        return if (all > 0) f / all else 0.0
     }
 
     /**

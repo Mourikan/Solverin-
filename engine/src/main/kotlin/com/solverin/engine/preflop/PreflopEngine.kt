@@ -111,7 +111,8 @@ class PreflopEngine(
         }
 
         if (ctx.policy.bluffCap) {
-            BluffBudget.apply(BluffBudget.ratio(key.scenario, ctx.villain), b.raise, b.call, valueEq, surplus, fallbackCall)
+            val fold = first?.let { BluffBudget.foldShare(it.response) } ?: 1.0
+            BluffBudget.apply(BluffBudget.ratio(key.scenario, fold), b.raise, b.call, valueEq, surplus, fallbackCall)
         }
 
         var realSum = 0.0; var realW = 0.0
