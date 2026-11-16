@@ -25,26 +25,25 @@ class EngineTest {
 
     private fun allKeys(): List<SpotKey> {
         val out = ArrayList<SpotKey>()
-        for (s in Scenario.entries) for (hero in Position.entries) for (v in Position.entries) {
-            if (hero == v) continue
-            if (s == Scenario.SQUEEZE) {
-                for (c in Position.entries) if (c != hero && c != v) {
-                    val k = SpotKey.of(s, hero, v, c); if (engine.isValid(k, nl50)) out += k
-                }
-            } else {
-                val k = SpotKey.of(s, hero, v); if (engine.isValid(k, nl50) && (s != Scenario.RFI || v == BB)) out += k
-            }
+        val callers = listOf<Position?>(null) + Position.entries
+        for (s in Scenario.entries) for (hero in Position.entries) for (v in Position.entries) for (c in callers) {
+            if (hero == v || c == hero || c == v) continue
+            if (s == Scenario.RFI && v != BB) continue
+            val k = SpotKey.of(s, hero, v, c)
+            if (engine.isValid(k, nl50)) out += k
         }
         return out
     }
 
     @Test fun allSpotsSolveValid() {
         val keys = allKeys()
-        assertEquals(5 + 15 + 15 + 15 + 20, keys.size)
+        // RFI 5, VS_RFI 15, VS_3BET 15, VS_4BET 15+20, SQUEEZE 20, VS_SQUEEZE_OPENER 20, VS_SQUEEZE_CALLER 20, VS_5BET 15
+        assertEquals(5 + 15 + 15 + 35 + 20 + 20 + 20 + 15, keys.size)
         for (stake in listOf(Stake.NL2, Stake.NL200)) for (k in keys) {
             val s = engine.strategy(k, PreflopContext(stake))
             for (x in 0 until HandClass.COUNT) assertTrue(s.raise(x) >= 0 && s.call(x) >= 0 && s.raise(x) + s.call(x) <= 1.0001f)
-            assertEquals(1f, s.raise(h("AA")), "AA must raise in $k")
+            if (k.scenario == Scenario.VS_5BET) assertEquals(1f, s.call(h("AA")), "AA must call in $k")
+            else assertEquals(1f, s.raise(h("AA")), "AA must raise in $k")
         }
     }
 
@@ -106,5 +105,41 @@ class EngineTest {
         val out = ByteArrayOutputStream(); repo.write(out)
         val back = RangeRepository.read(ByteArrayInputStream(out.toByteArray()))
         for (k in repo.keys()) assertEquals(repo[k], back[k])
+    }
+
+    @Test fun squeezeResponsesAndFiveBet() {
+        val opener = engine.analyze(SpotKey.of(Scenario.VS_SQUEEZE_OPENER, CO, BB, BTN), nl50)
+        assertEquals(1f, opener.strategy.raise(h("AA")))
+        assertEquals(1f, opener.strategy.fold(h("72o")))
+        assertTrue(opener.sprCall > opener.sprRaise)
+        val caller = engine.analyze(SpotKey.of(Scenario.VS_SQUEEZE_CALLER, BTN, SB, CO), nl50)
+        assertEquals(1f, caller.strategy.fold(h("72o")))
+        val five = engine.analyze(SpotKey.of(Scenario.VS_5BET, CO, BTN), nl50)
+        assertEquals(1f, five.strategy.call(h("AA")))
+        assertEquals(1f, five.strategy.fold(h("72o")))
+        assertTrue(five.evRaise[h("AA")].isNaN())
+        assertEquals(0.0, five.sprCall, 1e-9)
+        val afterSqueeze = engine.analyze(SpotKey.of(Scenario.VS_4BET, BB, CO, BTN), nl50)
+        assertEquals(1f, afterSqueeze.strategy.raise(h("AA")))
+    }
+
+    @Test fun blindDefenseVsEveryOpener() {
+        for (blind in listOf(SB, BB)) {
+            val openers = Position.entries.filter { it.ordinal < blind.ordinal }
+            val defend = openers.map { o ->
+                val r = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, blind, o), nl50).blindDefense, "$blind vs $o")
+                assertTrue(r.potOdds in 0.0..0.5)
+                r.defend
+            }
+            assertTrue(defend.first() < defend.last(), "$blind defend $defend")
+        }
+    }
+
+    @Test fun projectedSpr() {
+        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50)
+        assertEquals(97.5 / 5.5, a.sprCall, 1e-9)
+        assertEquals(90.0 / 20.5, a.sprRaise, 1e-9)
+        val deep = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50.copy(effectiveStackBb = 200.0))
+        assertTrue(deep.sprCall > a.sprCall)
     }
 }

@@ -56,21 +56,29 @@ class PreflopEngine(
         val policy = DecisionPolicy(ctx.policy)
         val n = HandClass.COUNT
         val evCall = FloatArray(n) { Float.NaN }
-        val evRaise = FloatArray(n)
+        val evRaise = FloatArray(n) { Float.NaN }
         val valueEq = FloatArray(n)
         val foldEq = FloatArray(n)
         val b = SpotStrategy.Builder()
         val call = nodes.call
-        val oop = call != null && !call.heroInPosition
-        val first = nodes.raise.opponents.firstOrNull()
-        val callSpr = call?.let { (ctx.effectiveStackBb - it.callTo) / (it.potBefore + it.callTo - it.heroInvested) } ?: 0.0
+        val raiseNode = nodes.raise
+        val first = raiseNode?.opponents?.firstOrNull()
+        val callSpr = call?.let {
+            (ctx.effectiveStackBb - minOf(it.callTo, ctx.effectiveStackBb)).coerceAtLeast(0.0) / (it.potBefore + it.callTo - it.heroInvested)
+        } ?: 0.0
+        // All-in calls have no postflop: no OOP penalty / playability floor.
+        val oop = call != null && !call.heroInPosition && callSpr > ALL_IN_SPR
         val surplus = DoubleArray(n)
         val fallbackCall = FloatArray(n)
 
         for (h in 0 until n) {
-            val er = calc.raise(h, nodes.raise)
-            evRaise[h] = er.toFloat()
-            valueEq[h] = calc.valueEquity(h, nodes.raise)
+            var raiseAdj = Double.NEGATIVE_INFINITY
+            if (raiseNode != null) {
+                val er = calc.raise(h, raiseNode)
+                evRaise[h] = er.toFloat()
+                valueEq[h] = calc.valueEquity(h, raiseNode)
+                raiseAdj = policy.adjustedRaise(er)
+            }
             if (first != null) foldEq[h] = Blockers.foldProbability(h, first.response.fold, first.response.continueRange).toFloat()
             var callAdj = Double.NEGATIVE_INFINITY
             if (call != null) {
@@ -78,7 +86,6 @@ class PreflopEngine(
                 evCall[h] = ec.toFloat()
                 callAdj = policy.adjustedCall(ec, oop, Playability.score(h, callSpr))
             }
-            val raiseAdj = policy.adjustedRaise(er)
             val mix = policy.mix(callAdj, raiseAdj)
             b.raise[h] = mix.raise
             b.call[h] = mix.call
@@ -98,10 +105,16 @@ class PreflopEngine(
             }
         }
         val strategy = b.build()
+        val sprCall = if (call != null) callSpr else Double.NaN
+        val sprRaise = raiseNode?.let { r ->
+            val x = minOf(r.raiseTo, ctx.effectiveStackBb)
+            val pot = r.potBefore + (x - r.heroInvested) + (x - (first?.invested ?: 0.0))
+            (ctx.effectiveStackBb - x).coerceAtLeast(0.0) / pot
+        } ?: Double.NaN
         val bd = if (key.scenario == Scenario.VS_RFI && key.hero.isBlind)
             BlindDefenseReport.of(key.hero, key.villain, ctx, vm, strategy, valueEq, if (realW > 0) realSum / realW else 0.0)
         else null
-        return SpotAnalysis(key, strategy, evCall, evRaise, valueEq, foldEq, bd)
+        return SpotAnalysis(key, strategy, evCall, evRaise, valueEq, foldEq, bd, sprCall, sprRaise)
     }
 
     /** Persists every cached matrix (for a given context) into a compact repository. */
@@ -112,4 +125,8 @@ class PreflopEngine(
     }
 
     fun clearCache() = synchronized(cache) { cache.clear() }
+
+    companion object {
+        private const val ALL_IN_SPR = 0.05
+    }
 }

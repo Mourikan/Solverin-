@@ -2,7 +2,7 @@ package com.solverin.engine.core
 
 /** 6-max positions in preflop action order. */
 enum class Position(val short: String) {
-    UTG("UTG"), HJ("HJ"), CO("CO"), BTN("BTN"), SB("SB"), BB("BB");
+    UTG("UTG"), HJ("MP"), CO("CO"), BTN("BTN"), SB("SB"), BB("BB");
 
     val isBlind get() = this == SB || this == BB
     val isLate get() = this == CO || this == BTN || this == SB

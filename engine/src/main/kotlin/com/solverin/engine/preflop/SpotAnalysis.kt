@@ -15,6 +15,10 @@ class SpotAnalysis(
     /** Per-hand fold probability of the first opponent vs hero's raise (card removal applied). */
     val foldEquity: FloatArray,
     val blindDefense: BlindDefenseReport?,
+    /** Projected SPR on the flop if hero flats (NaN if no call option). */
+    val sprCall: Double,
+    /** Projected SPR on the flop if hero raises and is called (NaN if no raise option). */
+    val sprRaise: Double,
 ) {
     fun decision(h: Int) = HandDecision(strategy.mix(h), evCall[h], evRaise[h], valueEquity[h], foldEquity[h], strategy.isValue(h))
 }

@@ -42,4 +42,18 @@ class VillainModel(val profile: VillainProfile, private val ranking: HandRanking
         val cold4 = 0.04
         Partition.split(defenseVsOpen(c, o).call, cold4, 1 - profile.callerFoldToSqueeze - cold4, 1.0, ranking)
     }
+
+    /** Squeeze range of [s] vs an open from [o] plus one caller; width scaled by opener width. */
+    fun squeezeRange(s: Position, o: Position): FloatArray = m("sq$s$o") {
+        val k = kotlin.math.sqrt(profile.rfi(o) / profile.rfiCo)
+        Partition.split(uniform, (profile.squeeze * k).coerceIn(0.0, 0.3), 0.0, profile.threeBetValueShare, ranking).raise
+    }
+
+    fun squeezerVs4Bet(s: Position, o: Position): Partition = m("s4b$s$o") {
+        Partition.split(squeezeRange(s, o), profile.fiveBet, 1 - profile.foldTo4Bet - profile.fiveBet, 1.0, ranking)
+    }
+
+    fun fourBettorVsJamAfterSqueeze(o: Position): Partition = m("f5s$o") {
+        Partition.split(openerVsSqueeze(o).raise, 0.0, 1 - profile.foldTo5Bet, 1.0, ranking)
+    }
 }

@@ -38,4 +38,6 @@ class CallNode(
     val squeezeRisk: Double,
 )
 
-class SpotNodes(val call: CallNode?, val raise: RaiseNode)
+class SpotNodes(val call: CallNode?, val raise: RaiseNode?) {
+    init { require(call != null || raise != null) }
+}

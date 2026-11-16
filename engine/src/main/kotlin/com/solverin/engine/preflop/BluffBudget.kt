@@ -19,6 +19,8 @@ object BluffBudget {
         Scenario.SQUEEZE -> 0.8
         Scenario.VS_3BET -> 0.7
         Scenario.VS_4BET -> 0.25
+        Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> 0.6
+        Scenario.VS_5BET -> 0.0
     }
 
     private fun foldPair(s: Scenario, p: VillainProfile): Pair<Double, Double> = when (s) {
@@ -27,6 +29,8 @@ object BluffBudget {
         Scenario.SQUEEZE -> (p.foldTo3Bet + 0.05) to 0.62
         Scenario.VS_3BET -> p.foldTo4Bet to 0.50
         Scenario.VS_4BET -> p.foldTo5Bet to 0.35
+        Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> p.foldTo4Bet to 0.50
+        Scenario.VS_5BET -> 1.0 to 1.0
     }
 
     fun ratio(s: Scenario, p: VillainProfile): Double {

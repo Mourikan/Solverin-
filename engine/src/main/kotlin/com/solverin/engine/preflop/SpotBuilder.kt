@@ -12,15 +12,28 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
 
     fun validate(key: SpotKey): Boolean {
         val h = key.hero; val v = key.villain
+        val noCaller = key.caller == null
         return when (key.scenario) {
-            Scenario.RFI -> h != Position.BB
-            Scenario.VS_RFI -> v != Position.BB && v.ordinal < h.ordinal
-            Scenario.VS_3BET -> h != Position.BB && v.ordinal > h.ordinal
-            Scenario.VS_4BET -> v != Position.BB && v.ordinal < h.ordinal
+            Scenario.RFI -> noCaller && h != Position.BB && v == Position.BB
+            Scenario.VS_RFI -> noCaller && v != Position.BB && v.ordinal < h.ordinal
+            Scenario.VS_3BET -> noCaller && h != Position.BB && v.ordinal > h.ordinal
+            Scenario.VS_4BET -> {
+                val c = key.caller
+                v != Position.BB && v.ordinal < h.ordinal && (c == null || (v.ordinal < c.ordinal && c.ordinal < h.ordinal))
+            }
             Scenario.SQUEEZE -> {
                 val c = key.caller ?: return false
                 v != Position.BB && v.ordinal < c.ordinal && c.ordinal < h.ordinal
             }
+            Scenario.VS_SQUEEZE_OPENER -> {
+                val c = key.caller ?: return false
+                h != Position.BB && h.ordinal < c.ordinal && c.ordinal < v.ordinal
+            }
+            Scenario.VS_SQUEEZE_CALLER -> {
+                val o = key.caller ?: return false
+                o != Position.BB && o.ordinal < h.ordinal && h.ordinal < v.ordinal
+            }
+            Scenario.VS_5BET -> noCaller && h != Position.BB && v.ordinal > h.ordinal
         }
     }
 
@@ -70,7 +83,16 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 val opp = Opponent(v, vm.threeBettorVs4Bet(v, h), y, stack, null, h.isInPositionVs(v))
                 SpotNodes(call, RaiseNode(pot, x, sz.fourBet(y), listOf(opp)))
             }
-            Scenario.VS_4BET -> {
+            Scenario.VS_4BET -> if (key.caller != null) {
+                val c = key.caller!!
+                val o = sz.open(v)
+                val sq = sz.squeeze(v, 1)
+                val z = sz.fourBet(sq)
+                val pot = sq + z + o + blinds - h.blindBb - v.blindBb - c.blindBb
+                val call = CallNode(pot, sq, z, listOf(vm.openerVsSqueeze(v).raise), h.isInPositionVs(v), 0.0)
+                val opp = Opponent(v, vm.fourBettorVsJamAfterSqueeze(v), z, stack, null, h.isInPositionVs(v))
+                SpotNodes(call, RaiseNode(pot, sq, stack, listOf(opp)))
+            } else {
                 val y = sz.threeBet(v, h)
                 val z = sz.fourBet(y)
                 val pot = y + z + blinds - h.blindBb - v.blindBb
@@ -93,6 +115,27 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 )
                 SpotNodes(call, RaiseNode(pot, h.blindBb, s, opps))
             }
+            Scenario.VS_SQUEEZE_OPENER -> facingSqueeze(h, opener = h, caller = key.caller!!, squeezer = v)
+            Scenario.VS_SQUEEZE_CALLER -> facingSqueeze(h, opener = key.caller!!, caller = h, squeezer = v)
+            Scenario.VS_5BET -> {
+                val y = sz.threeBet(h, v)
+                val z = sz.fourBet(y)
+                val pot = z + stack + blinds - h.blindBb - v.blindBb
+                val call = CallNode(pot, z, stack, listOf(vm.threeBettorVs4Bet(v, h).raise), h.isInPositionVs(v), 0.0)
+                SpotNodes(call, null)
+            }
         }
+    }
+
+    /** Hero (opener or cold caller, the other one folded/still to act) facing a squeeze. */
+    private fun facingSqueeze(h: Position, opener: Position, caller: Position, squeezer: Position): SpotNodes {
+        val blinds = Position.SB.blindBb + Position.BB.blindBb
+        val o = sz.open(opener)
+        val sq = sz.squeeze(opener, 1)
+        val pot = 2 * o + sq + blinds - opener.blindBb - caller.blindBb - squeezer.blindBb
+        val ip = h.isInPositionVs(squeezer)
+        val call = CallNode(pot, o, sq, listOf(vm.squeezeRange(squeezer, opener)), ip, 0.0)
+        val opp = Opponent(squeezer, vm.squeezerVs4Bet(squeezer, opener), sq, stack, null, ip)
+        return SpotNodes(call, RaiseNode(pot, o, sz.fourBet(sq), listOf(opp)))
     }
 }

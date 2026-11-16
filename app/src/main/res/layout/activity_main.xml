@@ -24,6 +24,7 @@
             android:orientation="horizontal">
             <Spinner android:id="@+id/spHero" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
             <Spinner android:id="@+id/spVillain" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
+            <Spinner android:id="@+id/spThird" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
             <Spinner android:id="@+id/spStack" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
         </LinearLayout>
 

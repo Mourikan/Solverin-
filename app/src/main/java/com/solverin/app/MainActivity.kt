@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var spStake: Spinner
     private lateinit var spHero: Spinner
     private lateinit var spVillain: Spinner
+    private lateinit var spThird: Spinner
     private lateinit var spStack: Spinner
     private lateinit var grid: RangeGridView
     private lateinit var tvSummary: TextView
@@ -41,6 +42,7 @@ class MainActivity : Activity() {
         spStake = findViewById(R.id.spStake)
         spHero = findViewById(R.id.spHero)
         spVillain = findViewById(R.id.spVillain)
+        spThird = findViewById(R.id.spThird)
         spStack = findViewById(R.id.spStack)
         grid = findViewById(R.id.grid)
         tvSummary = findViewById(R.id.tvSummary)
@@ -50,6 +52,7 @@ class MainActivity : Activity() {
         bind(spStake, Stake.entries.map { it.name })
         bind(spHero, Position.entries.map { "Hero ${it.short}" })
         bind(spVillain, Position.entries.map { "Vs ${it.short}" })
+        bind(spThird, listOf("3º: auto") + Position.entries.map { "3º: ${it.short}" })
         bind(spStack, stacks.map { "${it.toInt()}bb" })
         spStake.setSelection(Stake.NL50.ordinal)
         spHero.setSelection(Position.BTN.ordinal)
@@ -80,11 +83,17 @@ class MainActivity : Activity() {
             return if (hero == Position.BB) null else SpotKey.of(scenario, hero, Position.BB)
         }
         if (hero == villain) return null
-        val caller = if (scenario == Scenario.SQUEEZE)
-            Position.entries.firstOrNull { it.ordinal > villain.ordinal && it.ordinal < hero.ordinal } ?: return null
-        else null
-        val key = SpotKey.of(scenario, hero, villain, caller)
-        return key.takeIf { engine.isValid(it, ctx) }
+        val picked = spThird.selectedItemPosition.let { if (it == 0) null else Position.of(it - 1) }
+        val candidates: List<Position?> = when (scenario) {
+            Scenario.SQUEEZE, Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER ->
+                picked?.let { listOf(it) } ?: Position.entries
+            Scenario.VS_4BET -> picked?.let { listOf(it) } ?: listOf(null)
+            else -> listOf(null)
+        }
+        return candidates.asSequence()
+            .filter { it != hero && it != villain }
+            .map { SpotKey.of(scenario, hero, villain, it) }
+            .firstOrNull { engine.isValid(it, ctx) }
     }
 
     private fun refresh() {
@@ -110,6 +119,7 @@ class MainActivity : Activity() {
                     key, ctx.stake.name, ctx.effectiveStackBb,
                     s.raiseFrequency() * 100, s.callFrequency() * 100, s.vpip() * 100,
                 ))
+                sb.append(String.format(Locale.US, "\nSPR flop: call %s  raise %s", fmtSpr(a.sprCall), fmtSpr(a.sprRaise)))
                 a.blindDefense?.let {
                     sb.append(String.format(
                         Locale.US, "\nDefensa: pot odds %.1f%%  eq req %.1f%% (realizada %.1f%%)  MDF %.1f%%  defend %.1f%%  3bet %.1f%%  %s",
@@ -122,6 +132,8 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun fmtSpr(v: Double) = if (v.isNaN()) "-" else String.format(Locale.US, "%.1f", v)
+
     private fun showHand(h: Int) {
         val a = current ?: return
         val d = a.decision(h)
@@ -131,7 +143,7 @@ class MainActivity : Activity() {
             HandClass.name(h), m.raise * 100, m.call * 100, m.fold * 100,
             if (d.isValue && m.raise > 0f) "  [valor]" else if (m.raise > 0f) "  [farol]" else "",
             if (d.evCall.isNaN()) "-" else String.format(Locale.US, "%+.2fbb", d.evCall),
-            d.evRaise, d.valueEquity * 100, d.foldEquity * 100,
+            if (d.evRaise.isNaN()) 0f else d.evRaise, d.valueEquity * 100, d.foldEquity * 100,
         )
     }
 }
