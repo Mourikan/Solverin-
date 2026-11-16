@@ -112,12 +112,12 @@ class MainActivity : Activity() {
             val a = engine.analyze(key, ctx)
             runOnUiThread {
                 current = a
+                grid.reach = a.reach
                 grid.strategy = a.strategy
-                val s = a.strategy
                 val sb = StringBuilder(String.format(
-                    Locale.US, "%s | %s %.0fbb  raise %.1f%%  call %.1f%%  VPIP %.1f%%",
+                    Locale.US, "%s | %s %.0fbb  raise %.1f%%  call %.1f%%  fold %.1f%%  (rango en nodo %.1f%%)",
                     key, ctx.stake.name, ctx.effectiveStackBb,
-                    s.raiseFrequency() * 100, s.callFrequency() * 100, s.vpip() * 100,
+                    a.raiseFrequency() * 100, a.callFrequency() * 100, a.foldFrequency() * 100, a.reachFrequency() * 100,
                 ))
                 sb.append(String.format(Locale.US, "\nSPR flop: call %s  raise %s", fmtSpr(a.sprCall), fmtSpr(a.sprRaise)))
                 a.coldCall?.let {

@@ -10,6 +10,9 @@ import com.solverin.engine.math.FoldModel
 import com.solverin.engine.math.RakeAttribution
 import com.solverin.engine.math.RakeModel
 import com.solverin.engine.math.Realization
+import com.solverin.engine.model.NodeLock
+import com.solverin.engine.model.NodeLocks
+import com.solverin.engine.model.VillainNode
 import com.solverin.engine.preflop.ColdCallVerdict
 import com.solverin.engine.preflop.PreflopContext
 import com.solverin.engine.preflop.PreflopEngine
@@ -27,8 +30,6 @@ import kotlin.test.assertTrue
 class EngineTest {
     companion object { val engine = PreflopEngine() }
     private val nl50 = PreflopContext(Stake.NL50)
-    /** Exact rake attribution: range-width sanity bounds are checked under it. */
-    private val nl50Share = nl50.copy(rakeAttribution = RakeAttribution.WINNER_SHARE)
     private fun h(s: String) = HandClass.parse(s)
 
     private fun allKeys(): List<SpotKey> {
@@ -56,10 +57,14 @@ class EngineTest {
     }
 
     @Test fun rfiWidensByPosition() {
-        val w = listOf(UTG, HJ, CO, BTN).map { engine.strategy(SpotKey.of(Scenario.RFI, it), nl50Share).raiseFrequency() }
+        val w = listOf(UTG, HJ, CO, BTN).map { engine.strategy(SpotKey.of(Scenario.RFI, it), nl50).raiseFrequency() }
         assertEquals(w, w.sorted(), "RFI $w")
-        assertTrue(w[0] in 0.08..0.30, "UTG ${w[0]}")
-        assertTrue(w[3] in 0.25..0.75, "BTN ${w[3]}")
+        assertTrue(w[0] in 0.12..0.26, "UTG ${w[0]}")
+        assertTrue(w[3] in 0.38..0.55, "BTN ${w[3]}")
+        for (st in listOf(Stake.NL100, Stake.NL200)) {
+            val btn = engine.strategy(SpotKey.of(Scenario.RFI, BTN), PreflopContext(st)).raiseFrequency()
+            assertTrue(btn in 0.38..0.55, "BTN $st $btn")
+        }
         assertEquals(1f, engine.strategy(SpotKey.of(Scenario.RFI, UTG), nl50).fold(h("72o")))
     }
 
@@ -162,11 +167,17 @@ class EngineTest {
     }
 
     @Test fun blindDefenseReport() {
-        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50Share)
+        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50)
         val r = assertNotNull(a.blindDefense)
         assertEquals(1.5 / 4.0, r.mdf, 1e-9)
         assertEquals(1.5 / 5.5, r.potOdds, 1e-9)
-        assertTrue(r.defend > 0.25, "defend ${r.defend}")
+        assertTrue(r.defend >= r.mdf, "BB defend ${r.defend} < MDF ${r.mdf}")
+        val nl200 = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), PreflopContext(Stake.NL200)).blindDefense)
+        assertTrue(nl200.defend in 0.50..0.70, "BB NL200 ${nl200.defend}")
+        for (o in listOf(UTG, HJ, CO)) {
+            val d = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, o), PreflopContext(Stake.NL200)).blindDefense)
+            assertTrue(d.defend > 0.25, "BB NL200 vs $o ${d.defend}")
+        }
         assertTrue(r.requiredEquityRealized > r.requiredEquity)
         assertEquals(1f, a.strategy.fold(h("72o")))
     }
@@ -231,5 +242,35 @@ class EngineTest {
         assertEquals(90.0 / 20.5, a.sprRaise, 1e-9)
         val deep = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50.copy(effectiveStackBb = 200.0))
         assertTrue(deep.sprCall > a.sprCall)
+    }
+
+    @Test fun nodeLockingDrivesExploit() {
+        val k = SpotKey.of(Scenario.RFI, BTN)
+        val base = engine.strategy(k, nl50).raiseFrequency()
+        val nits = NodeLocks.NONE
+            .with(VillainNode.DEFEND_VS_OPEN, BB, NodeLock(raise = 0.05, call = 0.20), versus = BTN)
+            .with(VillainNode.DEFEND_VS_OPEN, SB, NodeLock(raise = 0.04, call = 0.04), versus = BTN)
+        val vsNits = engine.strategy(k, nl50.copy(locks = nits)).raiseFrequency()
+        val stations = NodeLocks.NONE.with(VillainNode.DEFEND_VS_OPEN, BB, NodeLock(raise = 0.15, call = 0.60), versus = BTN)
+        val vsStations = engine.strategy(k, nl50.copy(locks = stations)).raiseFrequency()
+        assertTrue(vsNits > base && base > vsStations, "$vsNits / $base / $vsStations")
+        val vm = engine.villainModel(nl50.villain, nits)
+        assertEquals(0.05, vm.defenseFrequencies(BB, BTN).first, 1e-12)
+        assertEquals(0.25 * 1326, vm.defenseVsOpen(BB, BTN).continueRange.withIndex().sumOf { (i, w) -> (w * HandClass.combos(i)).toDouble() }, 0.5)
+    }
+
+    @Test fun reachAndBackwardInduction() {
+        val rfi = engine.analyze(SpotKey.of(Scenario.RFI, BTN), nl50)
+        val vs3 = engine.analyze(SpotKey.of(Scenario.VS_3BET, BTN, BB), nl50)
+        val reach = assertNotNull(vs3.reach)
+        for (x in 0 until HandClass.COUNT) assertEquals(rfi.strategy.raise(x), reach[x])
+        assertEquals(rfi.strategy.raiseFrequency(), vs3.reachFrequency(), 1e-9)
+        assertTrue(vs3.foldFrequency() in 0.15..0.75, "BTN folds ${vs3.foldFrequency()} vs 3bet")
+        val five = engine.analyze(SpotKey.of(Scenario.VS_5BET, BTN, BB), nl50)
+        for (x in 0 until HandClass.COUNT) {
+            val t = vs3.raiseTerms!![x]
+            if (t.pReraise > 0) assertEquals(-t.investment + five.continuationValue(x), t.evVsReraise, 1e-9)
+        }
+        assertNull(rfi.reach)
     }
 }

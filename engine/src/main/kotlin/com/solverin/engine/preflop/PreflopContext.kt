@@ -4,6 +4,7 @@ import com.solverin.engine.core.Position
 import com.solverin.engine.core.RakeStructure
 import com.solverin.engine.core.Stake
 import com.solverin.engine.math.RakeAttribution
+import com.solverin.engine.model.NodeLocks
 import com.solverin.engine.model.VillainProfile
 
 data class PreflopContext(
@@ -13,7 +14,9 @@ data class PreflopContext(
     val villain: VillainProfile = VillainProfile.population(stake),
     val sizing: Sizing = Sizing(),
     val policy: StakePolicy = StakePolicy.of(stake),
-    val rakeAttribution: RakeAttribution = RakeAttribution.FULL,
+    val rakeAttribution: RakeAttribution = RakeAttribution.WINNER_SHARE,
+    /** Max Exploit: villain node locks applied on top of [villain]. */
+    val locks: NodeLocks = NodeLocks.NONE,
 )
 
 /** Raise sizes (bb). */

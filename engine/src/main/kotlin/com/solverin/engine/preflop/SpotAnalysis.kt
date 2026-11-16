@@ -1,5 +1,6 @@
 package com.solverin.engine.preflop
 
+import com.solverin.engine.core.HandClass
 import com.solverin.engine.range.ActionMix
 import com.solverin.engine.range.SpotKey
 import com.solverin.engine.range.SpotStrategy
@@ -22,7 +23,31 @@ class SpotAnalysis(
     val sprCall: Double,
     /** Projected flop SPR if hero raises and is called (NaN if no raise option). */
     val sprRaise: Double,
+    private val reachProvider: () -> FloatArray?,
 ) {
+    /** Hero's range reaching this node (class weights); null = all hands. Resolved lazily (parent node). */
+    val reach: FloatArray? by lazy { reachProvider() }
+
+    /** EV of hero's mixed strategy at this node for hand [h], relative to folding here. */
+    fun continuationValue(h: Int): Double {
+        var v = 0.0
+        val r = strategy.raise(h); val c = strategy.call(h)
+        if (r > 0f) v += r * evRaise(h)
+        if (c > 0f) v += c * evCall(h)
+        return v
+    }
+
+    /** Frequencies conditional on hero's range at the node. */
+    fun raiseFrequency(): Double = frequency(strategy, reach) { s, h -> s.raise(h) }
+    fun callFrequency(): Double = frequency(strategy, reach) { s, h -> s.call(h) }
+    fun foldFrequency(): Double = 1.0 - raiseFrequency() - callFrequency()
+    /** Share of all 1326 combos that reach this node. */
+    fun reachFrequency(): Double = reach?.let { r ->
+        var s = 0.0
+        for (h in 0 until HandClass.COUNT) s += r[h] * HandClass.combos(h)
+        s / HandClass.TOTAL_COMBOS
+    } ?: 1.0
+
     fun evCall(h: Int): Double = callTerms?.get(h)?.ev ?: Double.NaN
     fun evRaise(h: Int): Double = raiseTerms?.get(h)?.ev ?: Double.NaN
 
@@ -35,6 +60,17 @@ class SpotAnalysis(
         isValue = strategy.isValue(h),
         coldCall = coldCall?.verdict?.get(h),
     )
+
+    companion object {
+        inline fun frequency(s: SpotStrategy, reach: FloatArray?, f: (SpotStrategy, Int) -> Float): Double {
+            var num = 0.0; var den = 0.0
+            for (h in 0 until HandClass.COUNT) {
+                val w = (reach?.get(h) ?: 1f) * HandClass.combos(h)
+                num += w * f(s, h); den += w
+            }
+            return if (den > 0) num / den else 0.0
+        }
+    }
 }
 
 data class HandDecision(

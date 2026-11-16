@@ -21,11 +21,13 @@ class ColdCallAnalysis(
     val inPosition: Boolean,
     val terms: Array<EvTerms>,
     val verdict: Array<ColdCallVerdict>,
-    /** Combo-weighted call frequency. */
-    val frequency: Double,
+    private val frequencyProvider: () -> Double,
     /** Combo-weighted share of all hands whose flat is killed by rake. */
     val rakeRejected: Double,
 ) {
+    /** Combo-weighted call frequency over hero's range reaching the node. */
+    val frequency: Double by lazy { frequencyProvider() }
+
     fun count(v: ColdCallVerdict): Int = verdict.count { it == v }
 }
 
@@ -35,7 +37,9 @@ object ColdCallModule {
 
     private fun withoutSqueeze(t: EvTerms, branch: Double) = (1 - t.pReraise) * branch - t.pReraise * t.investment
 
-    fun analyze(key: SpotKey, call: CallNode, terms: Array<EvTerms>, strategy: SpotStrategy, policy: StakePolicy): ColdCallAnalysis {
+    fun analyze(
+        key: SpotKey, call: CallNode, terms: Array<EvTerms>, strategy: SpotStrategy, policy: StakePolicy, frequency: () -> Double,
+    ): ColdCallAnalysis {
         val edge = policy.callEdgeBb
         val verdict = Array(HandClass.COUNT) { h ->
             val t = terms[h]
@@ -56,6 +60,6 @@ object ColdCallModule {
         }
         var rake = 0.0
         for (h in 0 until HandClass.COUNT) if (verdict[h] == ColdCallVerdict.REJECT_RAKE) rake += HandClass.combos(h)
-        return ColdCallAnalysis(isCold(key), call.heroInPosition, terms, verdict, strategy.callFrequency(), rake / HandClass.TOTAL_COMBOS)
+        return ColdCallAnalysis(isCold(key), call.heroInPosition, terms, verdict, frequency, rake / HandClass.TOTAL_COMBOS)
     }
 }

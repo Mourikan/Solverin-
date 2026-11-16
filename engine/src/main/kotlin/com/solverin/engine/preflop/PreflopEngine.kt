@@ -1,11 +1,13 @@
 package com.solverin.engine.preflop
 
 import com.solverin.engine.core.HandClass
+import com.solverin.engine.core.Position
 import com.solverin.engine.eval.EquityTable
 import com.solverin.engine.eval.RangeEquity
 import com.solverin.engine.math.Blockers
 import com.solverin.engine.math.ImpliedOdds
 import com.solverin.engine.model.HandRanking
+import com.solverin.engine.model.NodeLocks
 import com.solverin.engine.model.VillainModel
 import com.solverin.engine.model.VillainProfile
 import com.solverin.engine.range.RangeRepository
@@ -26,16 +28,41 @@ class PreflopEngine(
     val ranking = HandRanking(table)
     val implied = ImpliedOdds(ranking)
 
-    private val models = HashMap<VillainProfile, VillainModel>()
+    private val models = HashMap<Pair<VillainProfile, NodeLocks>, VillainModel>()
     private val cache = object : LinkedHashMap<CacheKey, SpotAnalysis>(cacheSize, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, SpotAnalysis>?) = size > cacheSize
     }
 
     private data class CacheKey(val spot: Int, val ctx: PreflopContext)
 
-    fun villainModel(p: VillainProfile): VillainModel = synchronized(models) { models.getOrPut(p) { VillainModel(p, ranking) } }
+    fun villainModel(p: VillainProfile, locks: NodeLocks = NodeLocks.NONE): VillainModel =
+        synchronized(models) { models.getOrPut(p to locks) { VillainModel(p, ranking, locks) } }
 
-    fun isValid(key: SpotKey, ctx: PreflopContext) = SpotBuilder(ctx, villainModel(ctx.villain)).validate(key)
+    fun villainModel(ctx: PreflopContext): VillainModel = villainModel(ctx.villain, ctx.locks)
+
+    fun isValid(key: SpotKey, ctx: PreflopContext) = SpotBuilder(ctx, villainModel(ctx)).validate(key)
+
+    /**
+     * Hero's range reaching the node (class weights), derived from hero's own solved parent node.
+     * Null = every hand reaches (first decision: RFI, facing an open, squeeze spot).
+     */
+    fun reach(key: SpotKey, ctx: PreflopContext): FloatArray? {
+        val h = key.hero; val v = key.villain
+        return when (key.scenario) {
+            Scenario.RFI, Scenario.VS_RFI, Scenario.SQUEEZE -> null
+            Scenario.VS_3BET -> analyze(SpotKey.of(Scenario.RFI, h), ctx).strategy.raiseWeights()
+            Scenario.VS_SQUEEZE_OPENER -> analyze(SpotKey.of(Scenario.RFI, h), ctx).strategy.raiseWeights()
+            Scenario.VS_SQUEEZE_CALLER -> {
+                val s = analyze(SpotKey.of(Scenario.VS_RFI, h, key.caller!!), ctx).strategy
+                FloatArray(HandClass.COUNT) { s.call(it) }
+            }
+            Scenario.VS_4BET -> {
+                val parent = key.caller?.let { SpotKey.of(Scenario.SQUEEZE, h, v, it) } ?: SpotKey.of(Scenario.VS_RFI, h, v)
+                analyze(parent, ctx).strategy.raiseWeights()
+            }
+            Scenario.VS_5BET -> analyze(SpotKey.of(Scenario.VS_3BET, h, v), ctx).strategy.raiseWeights()
+        }
+    }
 
     fun strategy(key: SpotKey, ctx: PreflopContext): SpotStrategy = analyze(key, ctx).strategy
 
@@ -50,9 +77,11 @@ class PreflopEngine(
     }
 
     private fun solve(key: SpotKey, ctx: PreflopContext): SpotAnalysis {
-        val vm = villainModel(ctx.villain)
+        val vm = villainModel(ctx)
         val nodes = SpotBuilder(ctx, vm).build(key)
-        val math = PreflopMathEngine(ctx, equity, implied)
+        val children = HashMap<Position, SpotAnalysis>()
+        nodes.raise?.opponents?.forEach { o -> o.childKey?.let { children[o.position] = analyze(it, ctx) } }
+        val math = PreflopMathEngine(ctx, equity, implied) { o -> children[o.position] }
         val policy = DecisionPolicy(ctx.policy)
         val n = HandClass.COUNT
         val call = nodes.call
@@ -108,8 +137,11 @@ class PreflopEngine(
             BlindDefenseReport.of(key.hero, key.villain, ctx, vm, strategy, valueEq, if (realW > 0) realSum / realW else 0.0)
         else null
         val cc = if (call != null && callTerms != null)
-            ColdCallModule.analyze(key, call, callTerms, strategy, ctx.policy) else null
-        return SpotAnalysis(key, strategy, callTerms, raiseTerms, valueEq, foldEq, bd, cc, sprCall, sprRaise)
+            ColdCallModule.analyze(key, call, callTerms, strategy, ctx.policy) {
+                SpotAnalysis.frequency(strategy, reach(key, ctx)) { s, h -> s.call(h) }
+            }
+        else null
+        return SpotAnalysis(key, strategy, callTerms, raiseTerms, valueEq, foldEq, bd, cc, sprCall, sprRaise) { reach(key, ctx) }
     }
 
     /** Persists every cached matrix (for a given context) into a compact repository. */

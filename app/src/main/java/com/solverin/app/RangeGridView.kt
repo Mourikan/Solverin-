@@ -16,12 +16,17 @@ class RangeGridView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet?
     var strategy: SpotStrategy? = null
         set(value) { field = value; invalidate() }
 
+    /** Hero's range reaching the node; hands with weight 0 are dimmed. Null = all hands. */
+    var reach: FloatArray? = null
+        set(value) { field = value; invalidate() }
+
     var onHandSelected: ((Int) -> Unit)? = null
 
     private val raisePaint = Paint().apply { color = ctx.getColor(R.color.raise) }
     private val callPaint = Paint().apply { color = ctx.getColor(R.color.call) }
     private val foldPaint = Paint().apply { color = ctx.getColor(R.color.fold) }
     private val gridPaint = Paint().apply { color = Color.BLACK; strokeWidth = 1f }
+    private val dimPaint = Paint().apply { color = Color.BLACK; alpha = 170 }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textAlign = Paint.Align.CENTER }
     private val labels = Array(HandClass.COUNT) { HandClass.name(it) }
 
@@ -44,6 +49,11 @@ class RangeGridView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet?
             canvas.drawRect(x, y, xr, y + cell, raisePaint)
             canvas.drawRect(xr, y, xc, y + cell, callPaint)
             canvas.drawRect(xc, y, x + cell, y + cell, foldPaint)
+            val rw = reach?.get(h) ?: 1f
+            if (rw < 1f) {
+                dimPaint.alpha = (170 * (1f - rw)).toInt()
+                canvas.drawRect(x, y, x + cell, y + cell, dimPaint)
+            }
             canvas.drawText(labels[h], x + cell / 2, y + cell * 0.62f, textPaint)
         }
         for (i in 0..HandClass.GRID) {
