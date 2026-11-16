@@ -12,7 +12,7 @@ import com.solverin.engine.model.HandRanking
  *
  *   raw(h)      = hit(h)·payoff(V|h)·extract(pos)              hero makes a strong hand, villain pays
  *               − hit(V|h)·pays(h)·reverse(pos)                 villain makes a strong hand, hero pays
- *               − dom(V|h)·P(pair on flop)·reverse(pos)         hero top pair dominated
+ *   (kicker domination is priced inside R_real via DominationPenalty)
  *   EV_implied  = depth(SPR)·(raw(h) − E_combos[raw])           depth = clamp((SPR − 1) / 5, 0, 1)
  *
  *  hit(h):   P(strong made hand on the flop) + DRAW_COMPLETION·P(strong draw on the flop), exact over all
@@ -26,7 +26,6 @@ class ImpliedOdds(ranking: HandRanking) {
     val hit = FloatArray(HandClass.COUNT)
     private val payers = BooleanArray(HandClass.COUNT)
     private val pays = FloatArray(HandClass.COUNT)
-    private val dominators: Array<IntArray>
 
     init {
         for (h in 0 until HandClass.COUNT) hit[h] = computeHit(h).toFloat()
@@ -37,10 +36,6 @@ class ImpliedOdds(ranking: HandRanking) {
             pays[v] = if (pct < PAYER_FRACTION) 1f
             else (1.0 - (pct - PAYER_FRACTION) / (PAYS_FLOOR_AT - PAYER_FRACTION) * 0.9).coerceIn(0.1, 1.0).toFloat()
             acc += HandClass.combos(v)
-        }
-        dominators = Array(HandClass.COUNT) { h ->
-            if (HandClass.isPair(h)) IntArray(0)
-            else (0 until HandClass.COUNT).filter { v -> dominates(v, h) }.toIntArray()
         }
     }
 
@@ -65,14 +60,6 @@ class ImpliedOdds(ranking: HandRanking) {
             all += c; s += c * hit[v]
         }
         return if (all <= 0.0) 0.0 else s / all
-    }
-
-    fun domination(h: Int, villain: FloatArray): Double {
-        val all = CardRemoval.remaining(h, villain)
-        if (all <= 0.0) return 0.0
-        var d = 0.0
-        for (v in dominators[h]) d += villain[v] * CardRemoval.freeCombos(h, v)
-        return d / all
     }
 
     private data class MeanKey(val range: FloatArray, val pot: Double, val behind: Double, val ip: Boolean) {
@@ -111,8 +98,7 @@ class ImpliedOdds(ranking: HandRanking) {
         val rev = minOf(behind, potTotal * if (inPosition) REVERSE_IP else REVERSE_OOP)
         val gain = hit[h] * payoff(h, villain) * ext
         val lossHit = villainHit(h, villain) * pays[h] * rev
-        val lossDom = if (HandClass.isPair(h)) 0.0 else domination(h, villain) * PAIR_ON_FLOP * rev
-        return gain - lossHit - lossDom
+        return gain - lossHit
     }
 
     companion object {
@@ -142,14 +128,6 @@ class ImpliedOdds(ranking: HandRanking) {
 
         /** P(flop pairs one of two unpaired hole cards) = 1 - C(44,3)/C(50,3). */
         val PAIR_ON_FLOP = 1.0 - c(44, 3) / FLOPS
-
-        /** v dominates h: shares one rank and v's other rank is higher. */
-        fun dominates(v: Int, h: Int): Boolean {
-            if (HandClass.isPair(v) || HandClass.isPair(h)) return false
-            val vh = HandClass.highRank(v); val vl = HandClass.lowRank(v)
-            val hh = HandClass.highRank(h); val hl = HandClass.lowRank(h)
-            return (vh == hh && vl > hl) || (vh == hl && vl > hh) || (vl == hh && vh > hl) || (vl == hl && vh > hh)
-        }
 
         private fun heroStraight(board: Int, hero: Int): Boolean {
             val st = HandEvaluator.straightHigh(board or hero)

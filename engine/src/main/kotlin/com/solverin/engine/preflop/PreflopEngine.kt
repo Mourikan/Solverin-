@@ -107,8 +107,8 @@ class PreflopEngine(
         val bd = if (key.scenario == Scenario.VS_RFI && key.hero.isBlind)
             BlindDefenseReport.of(key.hero, key.villain, ctx, vm, strategy, valueEq, if (realW > 0) realSum / realW else 0.0)
         else null
-        val cc = if (call != null && callTerms != null && ColdCallModule.applies(key))
-            ColdCallModule.analyze(call, callTerms, strategy, ctx.policy) else null
+        val cc = if (call != null && callTerms != null)
+            ColdCallModule.analyze(key, call, callTerms, strategy, ctx.policy) else null
         return SpotAnalysis(key, strategy, callTerms, raiseTerms, valueEq, foldEq, bd, cc, sprCall, sprRaise)
     }
 

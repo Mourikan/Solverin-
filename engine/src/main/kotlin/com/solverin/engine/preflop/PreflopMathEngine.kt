@@ -1,22 +1,24 @@
 package com.solverin.engine.preflop
 
-import com.solverin.engine.eval.CardRemoval
 import com.solverin.engine.eval.RangeEquity
+import com.solverin.engine.math.FoldModel
 import com.solverin.engine.math.ImpliedOdds
 import com.solverin.engine.math.RakeModel
 import com.solverin.engine.math.Realization
 
 /**
- * Master preflop EV equation, evaluated per hand class (card-removal exact):
+ * Master preflop EV equation, per hand class, card-removal exact:
  *
  *  EV(raise) = P(fold)·(Pot + Dead)
- *            + P(call)·[EQ(h, callRange)·R(pos, SPR)·PotTotal − Investment − Rake(stake)] + EV_implied
- *            + P(reraise)·EV_vsReraise                       (fold / call / jam, same equation one level deeper)
+ *            + P(call)·[EQ(h, callRange)·R_real·PotTotal − Investment − Rake_model] + EV_implied
+ *            + P(reraise)·EV_vsReraise          (hero then folds / calls / jams: same equation one level deeper)
  *
- *  EV(call)  = (1 − P(squeeze))·[EQ·R·PotTotal − Investment − Rake + EV_implied] − P(squeeze)·Investment
+ *  EV(call)  = (1 − P(squeeze))·[EQ·R_real·PotTotal − Investment − Rake_model + EV_implied] − P(squeeze)·Investment
  *
- *  EV(fold)  = 0 (chips already posted are sunk).
- *  P(·) come from remaining villain combos after hero's cards (blockers). Multiway: first continuer heads-up.
+ *  P(fold)   = 1 − MDF·BlockerFactor·TendencyMultiplier      ([FoldModel])
+ *  R_real    = BasePos·Initiative·(1 + Playability − DominationPenalty)   ([Realization])
+ *  Rake      = min(Pot_postflop_avg·%rake, cap)              ([RakeModel], attribution per context)
+ *  EV(fold)  = 0 (posted chips are sunk).
  */
 class PreflopMathEngine(
     private val ctx: PreflopContext,
@@ -27,25 +29,31 @@ class PreflopMathEngine(
 
     private fun behind(invested: Double) = (stack - invested).coerceAtLeast(0.0)
     private fun spr(pot: Double, invested: Double) = if (pot <= 0) 0.0 else behind(invested) / pot
+    private fun rake(pot: Double, invested: Double, eqR: Double) =
+        RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind(invested), eqR)
 
     fun call(h: Int, n: CallNode): EvTerms {
         val to = minOf(n.callTo, stack)
         val invest = to - n.heroInvested
         val pot = n.potBefore + invest
         val players = n.villainRanges.size + 1
-        val e = if (n.villainRanges.size == 1) eq.vs(h, n.villainRanges[0])
-        else eq.multiway(eq.vs(h, n.villainRanges[0]), eq.vs(h, n.villainRanges[1]))
+        val main = n.villainRanges[0]
+        val e = if (n.villainRanges.size == 1) eq.vs(h, main)
+        else eq.multiway(eq.vs(h, main), eq.vs(h, n.villainRanges[1]))
         val s = spr(pot, to)
-        val r = Realization.factor(n.heroInPosition, initiative = false, spr = s, players = players)
-        val eqR = minOf(e * r, MAX_EQR).toDouble()
-        val rake = RakeModel.heroRake(ctx.rake, pot, behind(to), eqR)
-        var impl = implied.ev(h, n.villainRanges[0], pot, behind(to), n.heroInPosition)
+        val r = Realization.compute(h, main, n.heroInPosition, aggressor = false, spr = s, players = players)
+        val eqR = minOf(e * r.value, MAX_EQR).toDouble()
+        val rk = rake(pot, to, eqR)
+        var impl = implied.ev(h, main, pot, behind(to), n.heroInPosition)
         if (players > 2) impl *= Realization.MULTIWAY_DECAY
-        val branch = eqR * pot - invest - rake + impl
+        val branch = eqR * pot - invest - rk + impl
         val pSq = n.squeezeRisk
         return EvTerms(
             pFold = 0.0, pCall = 1 - pSq, pReraise = pSq, foldWin = 0.0,
-            equity = e, realization = r, potTotal = pot, investment = invest, rake = rake, implied = impl,
+            mdf = 0.0, blockerFactor = 1.0, tendency = 0.0,
+            equity = e, basePos = r.basePos, initiative = r.initiative, playability = r.playability,
+            domination = r.domination, realization = r.value, realizationNoDomination = r.valueWithoutDomination,
+            potTotal = pot, investment = invest, rake = rk, implied = impl,
             evVsReraise = -invest, ev = (1 - pSq) * branch - pSq * invest,
         )
     }
@@ -57,40 +65,40 @@ class PreflopMathEngine(
         var reach = 1.0
         var ev = 0.0
         var pCall = 0.0; var pRe = 0.0; var reEv = 0.0
-        var e0 = 0f; var r0 = 0f; var pot0 = 0.0; var rake0 = 0.0; var impl0 = 0.0
-        var first = true
+        var fm: FoldModel.Terms? = null
+        var e0 = 0f; var r0: Realization.Terms? = null; var pot0 = 0.0; var rake0 = 0.0; var impl0 = 0.0
         for (o in n.opponents) {
-            val f = CardRemoval.remaining(h, o.response.fold)
-            val c = CardRemoval.remaining(h, o.response.call)
-            val rr = CardRemoval.remaining(h, o.response.raise)
-            val all = f + c + rr
-            if (all <= 0.0) continue
-            if (c > 0) {
+            val f = FoldModel.evaluate(h, n.potBefore, invest, o.response.fold, o.response.call, o.response.raise)
+            if (fm == null) fm = f
+            val pc = f.pContinue * (1 - f.reraiseShare)
+            val pr = f.pContinue * f.reraiseShare
+            if (pc > 0) {
                 val pot = potAfterRaise + (x - o.invested)
                 val e = eq.vs(h, o.response.call)
                 val s = spr(pot, x)
-                val r = Realization.factor(o.heroInPosition, initiative = true, spr = s)
-                val eqR = minOf(e * r, MAX_EQR).toDouble()
-                val rake = RakeModel.heroRake(ctx.rake, pot, behind(x), eqR)
+                val r = Realization.compute(h, o.response.call, o.heroInPosition, aggressor = true, spr = s)
+                val eqR = minOf(e * r.value, MAX_EQR).toDouble()
+                val rk = rake(pot, x, eqR)
                 val impl = implied.ev(h, o.response.call, pot, behind(x), o.heroInPosition)
-                val p = reach * (c / all)
-                ev += p * (eqR * pot - invest - rake + impl)
-                pCall += p
-                if (first) { e0 = e; r0 = r; pot0 = pot; rake0 = rake; impl0 = impl }
+                ev += reach * pc * (eqR * pot - invest - rk + impl)
+                pCall += reach * pc
+                if (r0 == null) { e0 = e; r0 = r; pot0 = pot; rake0 = rk; impl0 = impl }
             }
-            if (rr > 0) {
-                val p = reach * (rr / all)
+            if (pr > 0) {
                 val v = vsReraise(h, o, x, invest, potAfterRaise)
-                ev += p * v
-                pRe += p; reEv += p * v
+                ev += reach * pr * v
+                pRe += reach * pr; reEv += reach * pr * v
             }
-            first = false
-            reach *= f / all
+            reach *= f.pFold
         }
         ev += reach * n.potBefore
         return EvTerms(
             pFold = reach, pCall = pCall, pReraise = pRe, foldWin = n.potBefore,
-            equity = e0, realization = r0, potTotal = pot0, investment = invest, rake = rake0, implied = impl0,
+            mdf = fm?.mdf ?: 0.0, blockerFactor = fm?.blockerFactor ?: 1.0, tendency = fm?.tendency ?: 0.0,
+            equity = e0, basePos = r0?.basePos ?: 0.0, initiative = r0?.initiative ?: 0.0,
+            playability = r0?.playability ?: 0.0, domination = r0?.domination ?: 0.0, realization = r0?.value ?: 0f,
+            realizationNoDomination = r0?.valueWithoutDomination ?: 0f,
+            potTotal = pot0, investment = invest, rake = rake0, implied = impl0,
             evVsReraise = if (pRe > 0) reEv / pRe else 0.0, ev = ev,
         )
     }
@@ -101,6 +109,7 @@ class PreflopMathEngine(
         return eq.vs(h, o.response.continueRange)
     }
 
+    /** Hero's best continuation after villain re-raises, relative to hero's original fold. */
     private fun vsReraise(h: Int, o: Opponent, x: Double, invest: Double, potAfterRaise: Double): Double {
         val z = minOf(o.reraiseTo, stack)
         val pr = potAfterRaise + (z - o.invested)
@@ -108,24 +117,22 @@ class PreflopMathEngine(
         val e = eq.vs(h, range)
         val callEv = if (z >= stack) {
             val fin = pr + (stack - x)
-            e * fin - (stack - x) - RakeModel.heroRake(ctx.rake, fin, 0.0, e.toDouble())
+            e * fin - (stack - x) - rake(fin, stack, e.toDouble())
         } else {
             val pot = pr + (z - x)
             val s = spr(pot, z)
-            val r = Realization.factor(o.heroInPosition, initiative = false, spr = s)
-            val eqR = minOf(e * r, MAX_EQR).toDouble()
-            eqR * pot - (z - x) - RakeModel.heroRake(ctx.rake, pot, behind(z), eqR) +
-                implied.ev(h, range, pot, behind(z), o.heroInPosition)
+            val r = Realization.compute(h, range, o.heroInPosition, aggressor = false, spr = s)
+            val eqR = minOf(e * r.value, MAX_EQR).toDouble()
+            eqR * pot - (z - x) - rake(pot, z, eqR) + implied.ev(h, range, pot, behind(z), o.heroInPosition)
         }
         var jamEv = Double.NEGATIVE_INFINITY
         val cont = o.continuesVsJam
         if (z < stack && cont != null) {
-            val remAll = CardRemoval.remaining(h, range)
-            val remCont = CardRemoval.remaining(h, cont)
-            val pf = if (remAll > 0) ((remAll - remCont) / remAll).coerceIn(0.0, 1.0) else 0.0
+            val fold = FloatArray(range.size) { (range[it] - cont[it]).coerceAtLeast(0f) }
+            val f = FoldModel.evaluate(h, pr, stack - x, fold, cont, FloatArray(range.size))
             val fin = pr + (stack - x) + (stack - z)
             val ej = eq.vs(h, cont).toDouble()
-            jamEv = pf * pr + (1 - pf) * (ej * fin - (stack - x) - RakeModel.heroRake(ctx.rake, fin, 0.0, ej))
+            jamEv = f.pFold * pr + f.pContinue * (ej * fin - (stack - x) - rake(fin, stack, ej))
         }
         return -invest + maxOf(0.0, callEv, jamEv)
     }

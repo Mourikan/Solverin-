@@ -122,8 +122,9 @@ class MainActivity : Activity() {
                 sb.append(String.format(Locale.US, "\nSPR flop: call %s  raise %s", fmtSpr(a.sprCall), fmtSpr(a.sprRaise)))
                 a.coldCall?.let {
                     sb.append(String.format(
-                        Locale.US, "\nCold call %s: %.1f%%  descartado por rake %.1f%%",
-                        if (it.inPosition) "IP" else "OOP", it.frequency * 100, it.rakeRejected * 100,
+                        Locale.US, "\n%s %s: %.1f%%  descartado por rake %.1f%%",
+                        if (it.cold) "Cold call" else "Flat", if (it.inPosition) "IP" else "OOP",
+                        it.frequency * 100, it.rakeRejected * 100,
                     ))
                 }
                 a.blindDefense?.let {
@@ -156,11 +157,20 @@ class MainActivity : Activity() {
                 t.pReraise, t.investment,
             ))
         }
+        d.call?.let { t ->
+            sb.append(String.format(
+                Locale.US, "\n  R = %.2f·%.2f·(1 %+.3f − %.3f)", t.basePos, t.initiative, t.playability, t.domination,
+            ))
+        }
         d.raise?.let { t ->
             sb.append(String.format(
                 Locale.US, "\nRAISE EV %+.2f = %.2f·%.1f + %.2f·[%.3f·%.2f·%.1f − %.2f − rake %.2f + impl %+.2f] + %.2f·%+.2f",
                 t.ev, t.pFold, t.foldWin, t.pCall, t.equity, t.realization, t.potTotal, t.investment, t.rake, t.implied,
                 t.pReraise, t.evVsReraise,
+            ))
+            sb.append(String.format(
+                Locale.US, "\n  P(fold) = 1 − MDF %.3f · BF %.3f · TM %.3f   R = %.2f·%.2f·(1 %+.3f − %.3f)",
+                t.mdf, t.blockerFactor, t.tendency, t.basePos, t.initiative, t.playability, t.domination,
             ))
         }
         sb.append(String.format(Locale.US, "\neq vs continue %.1f%%  FE %.1f%%", d.valueEquity * 100, d.foldEquity * 100))

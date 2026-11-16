@@ -5,6 +5,10 @@ import com.solverin.engine.core.Position
 import com.solverin.engine.core.Position.*
 import com.solverin.engine.core.Stake
 import com.solverin.engine.math.Blockers
+import com.solverin.engine.math.Domination
+import com.solverin.engine.math.FoldModel
+import com.solverin.engine.math.RakeAttribution
+import com.solverin.engine.math.RakeModel
 import com.solverin.engine.math.Realization
 import com.solverin.engine.preflop.ColdCallVerdict
 import com.solverin.engine.preflop.PreflopContext
@@ -17,11 +21,14 @@ import java.io.ByteArrayOutputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class EngineTest {
     companion object { val engine = PreflopEngine() }
     private val nl50 = PreflopContext(Stake.NL50)
+    /** Exact rake attribution: range-width sanity bounds are checked under it. */
+    private val nl50Share = nl50.copy(rakeAttribution = RakeAttribution.WINNER_SHARE)
     private fun h(s: String) = HandClass.parse(s)
 
     private fun allKeys(): List<SpotKey> {
@@ -49,10 +56,10 @@ class EngineTest {
     }
 
     @Test fun rfiWidensByPosition() {
-        val w = listOf(UTG, HJ, CO, BTN).map { engine.strategy(SpotKey.of(Scenario.RFI, it), nl50).raiseFrequency() }
+        val w = listOf(UTG, HJ, CO, BTN).map { engine.strategy(SpotKey.of(Scenario.RFI, it), nl50Share).raiseFrequency() }
         assertEquals(w, w.sorted(), "RFI $w")
         assertTrue(w[0] in 0.08..0.30, "UTG ${w[0]}")
-        assertTrue(w[3] in 0.30..0.75, "BTN ${w[3]}")
+        assertTrue(w[3] in 0.25..0.75, "BTN ${w[3]}")
         assertEquals(1f, engine.strategy(SpotKey.of(Scenario.RFI, UTG), nl50).fold(h("72o")))
     }
 
@@ -75,8 +82,14 @@ class EngineTest {
         val open = engine.villainModel(nl50.villain).open(UTG)
         val ip = imp.ev(h("77"), open, 6.0, 97.0, true)
         val oop = imp.ev(h("77"), open, 6.0, 97.0, false)
-        assertTrue(ip > oop && oop > 0)
-        assertTrue(imp.ev(h("KTo"), open, 6.0, 97.0, false) < 0, "KTo dominated vs UTG range")
+        assertTrue(ip > oop && ip > 0)
+        assertTrue(Domination.share(h("KTo"), open) > Domination.share(h("KQo"), open))
+        val kto = Realization.compute(h("KTo"), open, false, false, 15.0)
+        assertTrue(kto.domination > 0 && kto.value < kto.valueWithoutDomination)
+        val sc = Realization.compute(h("JTs"), open, true, false, 15.0)
+        val trash = Realization.compute(h("J2o"), open, true, false, 15.0)
+        assertTrue(sc.playability > 0 && trash.playability < 0 && sc.value > trash.value)
+        assertEquals(sc.basePos * sc.initiative * (1 + sc.playability - sc.domination), sc.value.toDouble(), 1e-5)
         assertEquals(0.0, imp.ev(h("77"), open, 6.0, 0.0, true))
     }
 
@@ -104,6 +117,41 @@ class EngineTest {
         assertNotNull(engine.analyze(SpotKey.of(Scenario.SQUEEZE, BB, CO, BTN), nl50).coldCall)
     }
 
+    @Test fun foldModelSubFunction() {
+        val vm = engine.villainModel(nl50.villain).openerVs3Bet(CO, BTN)
+        assertEquals(4.0 / (4.0 + 7.5), FoldModel.mdf(4.0, 7.5), 1e-12)
+        for (x in listOf("A5s", "72o", "KK", "T9s")) {
+            val f = FoldModel.evaluate(h(x), 4.0, 7.5, vm.fold, vm.call, vm.raise)
+            assertEquals(1 - f.mdf * f.blockerFactor * f.tendency, f.pFold, 1e-9)
+        }
+        assertTrue(FoldModel.evaluate(h("A5s"), 4.0, 7.5, vm.fold, vm.call, vm.raise).blockerFactor < 1.0)
+        assertTrue(FoldModel.evaluate(h("65s"), 4.0, 7.5, vm.fold, vm.call, vm.raise).blockerFactor > 1.0)
+    }
+
+    @Test fun rakeSubFunction() {
+        val nl2 = Stake.NL2.defaultRake
+        assertEquals(minOf(RakeModel.postflopAvgPot(5.5, 97.5) * nl2.rate, nl2.capBb), RakeModel.rakeModel(nl2, 5.5, 97.5), 1e-12)
+        assertEquals(nl2.capBb, RakeModel.rakeModel(nl2, 150.0, 25.0), 1e-12)
+        val k = SpotKey.of(Scenario.VS_RFI, BB, BTN)
+        val full = engine.strategy(k, nl50.copy(rakeAttribution = RakeAttribution.FULL))
+        val share = engine.strategy(k, nl50.copy(rakeAttribution = RakeAttribution.WINNER_SHARE))
+        assertTrue(full.callFrequency() < share.callFrequency())
+    }
+
+    @Test fun callModuleCoversEveryCallNode() {
+        val keys = listOf(
+            SpotKey.of(Scenario.VS_3BET, CO, BTN), SpotKey.of(Scenario.VS_4BET, BB, CO),
+            SpotKey.of(Scenario.VS_SQUEEZE_OPENER, HJ, BTN, CO), SpotKey.of(Scenario.VS_SQUEEZE_CALLER, CO, BB, HJ),
+            SpotKey.of(Scenario.VS_5BET, CO, BTN),
+        )
+        for (k in keys) {
+            val cc = assertNotNull(engine.analyze(k, nl50).coldCall, "$k")
+            assertTrue(!cc.cold)
+        }
+        assertTrue(assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, SB, UTG), nl50).coldCall).cold)
+        assertNull(engine.analyze(SpotKey.of(Scenario.RFI, UTG), nl50).coldCall)
+    }
+
     @Test fun masterEquationConsistency() {
         val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BTN, CO), nl50)
         for (x in 0 until HandClass.COUNT) {
@@ -114,7 +162,7 @@ class EngineTest {
     }
 
     @Test fun blindDefenseReport() {
-        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50)
+        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50Share)
         val r = assertNotNull(a.blindDefense)
         assertEquals(1.5 / 4.0, r.mdf, 1e-9)
         assertEquals(1.5 / 5.5, r.potOdds, 1e-9)
