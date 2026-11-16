@@ -1,0 +1,7 @@
+<resources>
+    <color name="bg">#FF121212</color>
+    <color name="raise">#FFD84343</color>
+    <color name="call">#FF3FA34D</color>
+    <color name="fold">#FF2B2B2B</color>
+    <color name="text">#FFEDEDED</color>
+</resources>
