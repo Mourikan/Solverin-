@@ -22,14 +22,22 @@ class FlopVillainModel(
 
     fun mdf(potBefore: Double, bet: Double): Double = if (potBefore + bet <= 0) 0.0 else potBefore / (potBefore + bet)
 
-    /** Villain facing a bet of [bet] into [potBefore] with range [range]. */
-    fun respondToBet(range: FloatArray, potBefore: Double, bet: Double): ComboPartition = memo(0, range, bet / potBefore) {
-        val l = locks[FlopVillainNode.VS_BET]
-        val tm = (1 - profile.foldToBet) / mdf(1.0, 0.5)
-        val cont = l?.fold?.let { 1 - it } ?: (mdf(potBefore, bet) * tm * textureFactor).coerceIn(0.02, 0.98)
-        val raise = minOf(l?.raise ?: profile.raiseVsBet, cont)
-        ComboPartition.split(range, raise, cont - raise, l?.valueShare ?: profile.raiseValueShare, byStrength, byBluff)
+    /** Villain's continue share facing a bet of [bet] into [potBefore] (unblocked, before range split). */
+    fun continueShare(potBefore: Double, bet: Double, node: FlopVillainNode = FlopVillainNode.VS_BET): Double {
+        val l = locks[node]
+        val fold = if (node == FlopVillainNode.VS_DONK) profile.foldToDonk else profile.foldToBet
+        val tm = (1 - fold) / mdf(1.0, 0.5)
+        return l?.fold?.let { 1 - it } ?: (mdf(potBefore, bet) * tm * textureFactor).coerceIn(0.02, 0.98)
     }
+
+    /** Villain facing a bet (or a donk lead when [node] = VS_DONK) of [bet] into [potBefore] with range [range]. */
+    fun respondToBet(range: FloatArray, potBefore: Double, bet: Double, node: FlopVillainNode = FlopVillainNode.VS_BET): ComboPartition =
+        memo(if (node == FlopVillainNode.VS_DONK) 10 else 0, range, bet / potBefore) {
+            val l = locks[node]
+            val cont = continueShare(potBefore, bet, node)
+            val raise = minOf(l?.raise ?: profile.raiseVsBet, cont)
+            ComboPartition.split(range, raise, cont - raise, l?.valueShare ?: profile.raiseValueShare, byStrength, byBluff)
+        }
 
     /** Villain (who bet) facing hero's raise. */
     fun respondToRaise(betRange: FloatArray): ComboPartition = memo(1, betRange, 0.0) {

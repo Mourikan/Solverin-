@@ -6,40 +6,53 @@ import java.util.IdentityHashMap
 /**
  * Master flop EV equation (per hero combo, card-removal exact):
  *
- *  EV(bet/raise) = P(fold)·Pot + P(call)·[EQ(h, callRange)·R_post(SPR, pos)·PotTotal − Inv − Rake_flop + EV_implied]
- *                + P(raise)·EV_vsRaise − Penalty_texture
- *  EV(call)      = EQ(h, betRange)·R_post·PotTotal − Inv − Rake_flop + EV_implied − Penalty_texture
- *  EV(check)     = (1 − P(villain bets))·[EQ·R_post·Pot − Rake + EV_implied] + P(villain bets)·max(fold, call, raise)
- *                − Penalty_texture
- *  EV(fold)      = 0
+ *  EV(bet/raise/donk) = P(fold)·Pot + P(call)·[EQ(h, callRange)·R_post·PotTotal − Inv − Rake_flop + EV_implied]
+ *                     + P(raise)·EV_vsRaise
+ *  EV(call)           = EQ(h, betRange)·R_post·PotTotal − Inv − Rake_flop + EV_implied
+ *  EV(check)          = (1 − P(villain bets))·[EQ·R_post·Pot − Rake + EV_implied] + P(villain bets)·max(fold, call, raise)
+ *  EV(fold)           = 0
  *
- * Bounded tree (3 bet levels): bet → raise → re-raise all-in → call / fold. Any branch that leaves less
- * than commitSpr × pot behind is valued as all-in (raw equity, no realization loss), so the tree never
- * calls off most of a stack and then folds.
+ *  R_post = BasePos · Initiative · (1 − K · villainDrawDensity · vulnerability(hand)), SPR → 0 pulls R → 1.
+ *
+ * Bounded tree (3 bet levels): bet → raise → re-raise all-in → call / fold. Any branch leaving less than
+ * commitSpr × pot behind is valued as all-in (raw equity), so the tree never calls off a stack and folds.
  */
 class FlopMathEngine(
     private val spot: FlopSpot,
     private val ctx: FlopContext,
-    private val equity: FlopEquity,
+    private val equity: EquityProvider,
+    shared: Shared? = null,
 ) {
+    /** Board-only data reusable across contexts (node-lock recalculation). */
+    class Shared(spot: FlopSpot) {
+        private val dead = Combos.mask(spot.board)
+        val hero = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.heroRange[it] else 0f }
+        val villain = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.villainRange[it] else 0f }
+        val flopId = FlopIso.id(spot.board)
+        val texture = Textures.of(flopId)
+        val strength = BoardStrength(spot.board)
+        val outs = IntArray(Combos.COUNT) { if (Combos.isLive(it, dead)) Draws.outs(spot.board, it) else 0 }
+    }
+
+    private val s = shared ?: Shared(spot)
     private val p = ctx.policy
     private val stack = spot.effectiveStackBb
-    private val dead = Combos.mask(spot.board)
 
-    val hero = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.heroRange[it] else 0f }
-    val villain = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.villainRange[it] else 0f }
-    val flopId = FlopIso.id(spot.board)
-    val texture = Textures.of(flopId)
-    val strength = BoardStrength(spot.board)
-    val outs = IntArray(Combos.COUNT) { if (Combos.isLive(it, dead)) Draws.outs(spot.board, it) else 0 }
+    val hero get() = s.hero
+    val villain get() = s.villain
+    val flopId get() = s.flopId
+    val texture get() = s.texture
+    val strength get() = s.strength
+    val outs get() = s.outs
 
     private val eqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
     private val payoffCache = IdentityHashMap<FloatArray, Double>()
+    private val drawCache = IdentityHashMap<FloatArray, Double>()
 
-    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.handsVsRange(spot.board, range, hero) }
+    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.heroVs(range) }
 
     val heroVsVillain: FlopEquity.Result = eqVs(villain)
-    private val villainVsHero: FlopEquity.Result = equity.handsVsRange(spot.board, hero, villain)
+    private val villainVsHero: FlopEquity.Result = equity.villainVs(hero)
 
     /** ΔRange = hero range equity − 50%. */
     val rangeAdvantage: Double = heroVsVillain.rangeEquity(hero) - 0.5
@@ -66,9 +79,27 @@ class FlopMathEngine(
 
     // ---- sub-functions -------------------------------------------------------------------------------
 
-    fun realization(aggressor: Boolean, spr: Double): Double {
-        val r = (if (spot.heroInPosition) p.realizationIp else p.realizationOop) *
+    /** Weighted share of [range] holding a strong draw (≥ 8 outs). */
+    fun drawDensity(range: FloatArray): Double = drawCache.getOrPut(range) {
+        var t = 0.0; var d = 0.0
+        for (k in range.indices) { val w = range[k]; if (w <= 0f) continue; t += w; if (outs[k] >= 8) d += w }
+        if (t > 0) d / t else 0.0
+    }
+
+    /** How much hero's hand loses to villain's outs: nuts 0, strong 0.5, vulnerable made hand 1, draws 0.2, air 0.5. */
+    fun vulnerability(h: Int): Double = when {
+        isNut(h) -> 0.0
+        isStrong(h) -> 0.5
+        outs[h] > 0 -> 0.2
+        strength.category[h] >= 1 -> 1.0
+        else -> 0.5
+    }
+
+    /** R_post(SPR, Pos) penalized by villain's outs vs hero's vulnerability. */
+    fun realization(h: Int, range: FloatArray, aggressor: Boolean, spr: Double): Double {
+        val base = (if (spot.heroInPosition) p.realizationIp else p.realizationOop) *
             (if (aggressor) p.initiativeAggressor else p.initiativeCaller)
+        val r = base * (1 - p.vulnerabilityK * drawDensity(range) * vulnerability(h))
         val low = ((p.lowSpr - spr) / p.lowSpr).coerceIn(0.0, 1.0)
         return r + (1 - r) * low
     }
@@ -83,16 +114,6 @@ class FlopMathEngine(
 
     fun isNut(h: Int) = strength.inTop(h, p.nutFraction)
     fun isStrong(h: Int) = strength.inTop(h, p.strongFraction)
-
-    /** Betting into a nut disadvantage with a non-nut hand invites raises. */
-    fun betPenalty(h: Int, pot: Double): Double =
-        if (isNut(h)) 0.0 else p.textureBetPenalty * pot * maxOf(0.0, -nutAdvantage)
-
-    /** Passive play with a vulnerable made hand (pair-type, not strong, no draw) on volatile boards. */
-    fun passivePenalty(h: Int, pot: Double): Double {
-        val vulnerable = strength.category[h] >= 1 && !isStrong(h) && outs[h] == 0
-        return if (vulnerable) p.texturePassivePenalty * pot * texture.volatility else 0.0
-    }
 
     fun isMinBet(bet: Double, potBefore: Double): Boolean = bet <= p.minBetRatio * potBefore || bet <= 1.0
 
@@ -111,7 +132,7 @@ class FlopMathEngine(
             val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, potAll, 0.0, e.toDouble())
             return Branch(e * potAll - inv - rk, e, 1f, potAll, inv, rk, 0.0, true)
         }
-        val r = realization(aggressor, behind / pot)
+        val r = realization(h, range, aggressor, behind / pot)
         val eqR = minOf(e * r, MAX_EQR)
         val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind, eqR)
         val imp = implied(h, range, pot, behind)
@@ -128,18 +149,19 @@ class FlopMathEngine(
     fun aggressive(h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int): FlopEvTerms {
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
-        var (pf, pc, pr) = resp.probabilities(h).let { Triple(it[0], it[1], it[2]) }
+        val pr0 = resp.probabilities(h)
+        val pf = pr0[0]
+        var pc = pr0[1]; var pr = pr0[2]
         if (x >= stack) { pc += pr; pr = 0.0 }
         val potCalled = potBefore + a + (x - vInv)
         val callRange = if (x >= stack) resp.continueRange else resp.call
         val br = called(h, callRange, potCalled, a, stack - x, aggressor = true)
         val evR = if (pr > 0) vsReraise(h, potBefore + a, x, vInv, a, resp.raise, level) else 0.0
-        val pen = betPenalty(h, potBefore)
         return FlopEvTerms(
             pFold = pf, pCall = pc, pRaise = pr, foldWin = potBefore,
             equity = br.equity, realization = br.realization, potTotal = br.potTotal, investment = br.investment,
-            rake = br.rake, implied = br.implied, penalty = pen, evVsRaise = evR, calledEv = br.value, allIn = br.allIn,
-            ev = pf * potBefore + pc * br.value + pr * evR - pen,
+            rake = br.rake, implied = br.implied, evVsRaise = evR, calledEv = br.value, allIn = br.allIn,
+            ev = pf * potBefore + pc * br.value + pr * evR,
         )
     }
 
@@ -164,12 +186,10 @@ class FlopMathEngine(
     fun call(h: Int, potBefore: Double, toCall: Double, betRange: FloatArray): FlopEvTerms {
         val c = minOf(toCall, stack)
         val br = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
-        val pen = passivePenalty(h, potBefore + c)
         return FlopEvTerms(
             pFold = 0.0, pCall = 1.0, pRaise = 0.0, foldWin = 0.0,
             equity = br.equity, realization = br.realization, potTotal = br.potTotal, investment = br.investment,
-            rake = br.rake, implied = br.implied, penalty = pen, evVsRaise = 0.0, calledEv = br.value, allIn = br.allIn,
-            ev = br.value - pen,
+            rake = br.rake, implied = br.implied, evVsRaise = 0.0, calledEv = br.value, allIn = br.allIn, ev = br.value,
         )
     }
 
@@ -179,30 +199,24 @@ class FlopMathEngine(
 
     /**
      * Hero checks with [pot]: villain then bets with his [villainFirstAction] range (prob with card removal)
-     * at profile size, else the hand checks through (realized vs his checking range).
+     * at profile size, else the hand checks through (realized vs his checking range, no initiative).
      */
     fun check(h: Int, pot: Double, villainActsAfter: Boolean): FlopEvTerms {
         val checkRange = villainFirstAction.fold
-        // Checking gives up the initiative: the hand realizes as a non-aggressor.
         val through = called(h, checkRange, pot, 0.0, stack, aggressor = false)
-        val pen = passivePenalty(h, pot)
         if (!villainActsAfter) {
             return FlopEvTerms(0.0, 1.0, 0.0, 0.0, through.equity, through.realization, through.potTotal, 0.0,
-                through.rake, through.implied, pen, 0.0, through.value, through.allIn, through.value - pen)
+                through.rake, through.implied, 0.0, through.value, through.allIn, through.value)
         }
         val pb = villainFirstAction.probabilities(h)[2]
         val betRange = villainFirstAction.raise
         val b = minOf(ctx.profile.betSizeFraction * pot, stack)
-        val best = if (pb > 0) {
-            val cl = call(h, pot + b, b, betRange).ev
-            val rs = raiseVsBet(h, pot + b, b, betRange).ev
-            maxOf(0.0, cl, rs)
-        } else 0.0
+        val best = if (pb > 0) maxOf(0.0, call(h, pot + b, b, betRange).ev, raiseVsBet(h, pot + b, b, betRange).ev) else 0.0
         return FlopEvTerms(
             pFold = 0.0, pCall = 1 - pb, pRaise = pb, foldWin = 0.0,
             equity = through.equity, realization = through.realization, potTotal = through.potTotal, investment = 0.0,
-            rake = through.rake, implied = through.implied, penalty = pen, evVsRaise = best, calledEv = through.value,
-            allIn = through.allIn, ev = (1 - pb) * through.value + pb * best - pen,
+            rake = through.rake, implied = through.implied, evVsRaise = best, calledEv = through.value,
+            allIn = through.allIn, ev = (1 - pb) * through.value + pb * best,
         )
     }
 

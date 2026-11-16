@@ -2,96 +2,16 @@ package com.solverin.engine.flop
 
 import com.solverin.engine.core.HandClass
 
-/** Flop solver: master-equation EVs per combo, range / nut advantage, bet sizing and action frequencies. */
-class FlopEngine(private val equity: FlopEquity = FlopEquity()) {
+/**
+ * Flop solver: master-equation EVs per combo, range / nut advantage, geometric + elastic bet sizing,
+ * action frequencies. One [FlopSession] per spot builds the board equity matrix once; re-analysis with new
+ * node locks / profile only rebuilds villain responses (milliseconds).
+ */
+class FlopEngine(private val stride: Int = FlopEquity.FAST_STRIDE) {
 
-    fun analyze(spot: FlopSpot, ctx: FlopContext): FlopAnalysis {
-        val m = FlopMathEngine(spot, ctx, equity)
-        val p = ctx.policy
-        val pot = spot.potBb
-        val heroIdx = (0 until Combos.COUNT).filter { m.hero[it] > 0f }
-        return when (spot.nodeType) {
-            FlopNodeType.VS_BET -> {
-                val bet = minOf(spot.facingBetBb, spot.effectiveStackBb)
-                val potBefore = pot + bet
-                val betRange = if (spot.isDonk) {
-                    m.villainModel.firstAction(m.villain, FlopVillainNode.DONK, m.donkRead?.valueShare).raise
-                } else m.villainFirstAction.raise
-                val minBet = m.isMinBet(bet, pot)
-                val call = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
-                val raise = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
-                val fFold = FloatArray(Combos.COUNT); val fCall = FloatArray(Combos.COUNT); val fRaise = FloatArray(Combos.COUNT)
-                val potOdds = bet / (potBefore + bet)
-                for (h in heroIdx) {
-                    val c = m.call(h, potBefore, bet, betRange)
-                    val r = if (bet < spot.effectiveStackBb) m.raiseVsBet(h, potBefore, bet, betRange) else null
-                    call[h] = c; raise[h] = r
-                    // Min-bet guard: with pot-odds equity a fold is never allowed.
-                    val foldAllowed = !(minBet && c.equity >= potOdds)
-                    val mix = mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, c.ev, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
-                    fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
-                }
-                val raiseResp = m.villainModel.respondToRaise(betRange)
-                val raiseFraction = (m.raiseTo(bet) - bet) / potBefore
-                val ratio = FlopBluffCap.ratio(true, raiseFraction, raiseResp.foldTotal / raiseResp.priorTotal,
-                    m.villainModel.mdf(potBefore, m.raiseTo(bet) - bet))
-                val capped = FlopBluffCap.apply(
-                    heroIdx, m.hero, ratio, fRaise, fCall, fFold,
-                    aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
-                    isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
-                    foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
-                )
-                FlopAnalysis(
-                    spot, m.flopId, m.texture, FlopNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage,
-                    m.heroVsVillain.rangeEquity(m.hero), null, null,
-                    mdf = pot / (pot + bet), potOdds = potOdds, minBet = minBet, donkRead = if (spot.isDonk) m.donkRead else null,
-                    freq = mapOf(FlopAction.FOLD to fFold, FlopAction.CALL to fCall, FlopAction.RAISE to fRaise),
-                    terms = mapOf(FlopAction.CALL to call, FlopAction.RAISE to raise), heroRange = m.hero, capped = capped,
-                )
-            }
-            FlopNodeType.VS_CHECK, FlopNodeType.FIRST_TO_ACT -> {
-                val villainActsAfter = spot.nodeType == FlopNodeType.FIRST_TO_ACT
-                val facingRange = if (villainActsAfter) m.villain else m.villainFirstAction.fold
-                val check = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
-                for (h in heroIdx) check[h] = m.check(h, pot, villainActsAfter)
-                var bestSize = p.betSizes.first()
-                var bestValue = Double.NEGATIVE_INFINITY
-                var bestBets: Array<FlopEvTerms?> = arrayOfNulls(Combos.COUNT)
-                var fCheck = FloatArray(Combos.COUNT); var fBet = FloatArray(Combos.COUNT)
-                var bestCapped = BooleanArray(Combos.COUNT)
-                for (size in p.betSizes) {
-                    val b = minOf(size * pot, spot.effectiveStackBb)
-                    val resp = m.villainModel.respondToBet(facingRange, pot, b)
-                    val bets = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
-                    val fc = FloatArray(Combos.COUNT); val fb = FloatArray(Combos.COUNT)
-                    for (h in heroIdx) {
-                        val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1)
-                        bets[h] = t
-                        val mix = mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, t.ev, p.mixBandBb)
-                        fc[h] = mix[1]; fb[h] = mix[2]
-                    }
-                    val ratio = FlopBluffCap.ratio(false, b / pot, resp.foldTotal / resp.priorTotal, m.villainModel.mdf(pot, b))
-                    val cappedHere = FlopBluffCap.apply(
-                        heroIdx, m.hero, ratio, fb, fc, null,
-                        aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
-                        isValue = { m.eqVs(resp.continueRange).equity(it) >= 0.5f || m.isNut(it) }, foldAllowed = { false },
-                    )
-                    var total = 0.0
-                    for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
-                    if (total > bestValue) {
-                        bestValue = total; bestSize = size; bestBets = bets; fCheck = fc; fBet = fb; bestCapped = cappedHere
-                    }
-                }
-                FlopAnalysis(
-                    spot, m.flopId, m.texture, spot.nodeType, m.rangeAdvantage, m.nutAdvantage,
-                    m.heroVsVillain.rangeEquity(m.hero), bestSize, minOf(bestSize * pot, spot.effectiveStackBb),
-                    mdf = null, potOdds = null, minBet = false, donkRead = m.donkRead,
-                    freq = mapOf(FlopAction.CHECK to fCheck, FlopAction.BET to fBet),
-                    terms = mapOf(FlopAction.CHECK to check, FlopAction.BET to bestBets), heroRange = m.hero, capped = bestCapped,
-                )
-            }
-        }
-    }
+    fun session(spot: FlopSpot): FlopSession = FlopSession(spot, stride)
+
+    fun analyze(spot: FlopSpot, ctx: FlopContext): FlopAnalysis = session(spot).analyze(ctx)
 
     companion object {
         /** Linear mix of [fold, call(or check), raise(or bet)] within [band] of the best EV. */
@@ -99,10 +19,114 @@ class FlopEngine(private val equity: FlopEquity = FlopEquity()) {
             val best = maxOf(fold, passive, aggressive)
             fun w(v: Double) = if (v == Double.NEGATIVE_INFINITY) 0.0 else ((band - (best - v)) / band).coerceAtLeast(0.0)
             val wf = w(fold); val wp = w(passive); val wa = w(aggressive)
-            val s = wf + wp + wa
-            if (s <= 0.0) return floatArrayOf(0f, 1f, 0f)
-            return floatArrayOf((wf / s).toFloat(), (wp / s).toFloat(), (wa / s).toFloat())
+            val sum = wf + wp + wa
+            if (sum <= 0.0) return floatArrayOf(0f, 1f, 0f)
+            return floatArrayOf((wf / sum).toFloat(), (wp / sum).toFloat(), (wa / sum).toFloat())
         }
+    }
+}
+
+/** Spot-bound solver state: board data + equity matrix shared by every [analyze] call. */
+class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
+    private val shared = FlopMathEngine.Shared(spot)
+    val matrix: FlopEquityMatrix by lazy { FlopEquityMatrix(spot.board, shared.hero, shared.villain, stride) }
+
+    fun analyze(ctx: FlopContext): FlopAnalysis {
+        val m = FlopMathEngine(spot, ctx, matrix, shared)
+        val p = ctx.policy
+        val pot = spot.potBb
+        val heroIdx = (0 until Combos.COUNT).filter { m.hero[it] > 0f }
+        return when (spot.nodeType) {
+            FlopNodeType.VS_BET -> facingBet(m, ctx, heroIdx)
+            FlopNodeType.VS_CHECK, FlopNodeType.FIRST_TO_ACT -> {
+                val villainActsAfter = spot.nodeType == FlopNodeType.FIRST_TO_ACT
+                val donk = villainActsAfter && !spot.heroIsAggressor
+                val betAction = if (donk) FlopAction.DONK else FlopAction.BET
+                val respNode = if (donk) FlopVillainNode.VS_DONK else FlopVillainNode.VS_BET
+                val facingRange = if (villainActsAfter) m.villain else m.villainFirstAction.fold
+                val check = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
+                for (h in heroIdx) check[h] = m.check(h, pot, villainActsAfter)
+                val spr = spot.effectiveStackBb / pot
+                val elasticity = BetSizingOptimizer.elasticity({ f -> m.villainModel.continueShare(pot, f * pot, respNode) })
+                val sizes = BetSizingOptimizer.candidates(spr, m.rangeAdvantage, m.nutAdvantage, elasticity, p)
+                var best: SizeResult? = null
+                for (size in sizes) {
+                    val b = minOf(size * pot, spot.effectiveStackBb)
+                    val resp = m.villainModel.respondToBet(facingRange, pot, b, respNode)
+                    val bets = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
+                    val fc = FloatArray(Combos.COUNT); val fb = FloatArray(Combos.COUNT)
+                    for (h in heroIdx) {
+                        val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1)
+                        bets[h] = t
+                        val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, t.ev, p.mixBandBb)
+                        fc[h] = mix[1]; fb[h] = mix[2]
+                    }
+                    val ratio = FlopBluffCap.ratio(false, b / pot, resp.foldTotal / resp.priorTotal, m.villainModel.mdf(pot, b))
+                    val capped = FlopBluffCap.apply(
+                        heroIdx, m.hero, ratio, fb, fc, null,
+                        aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
+                        isValue = { m.eqVs(resp.continueRange).equity(it) >= 0.5f || m.isNut(it) }, foldAllowed = { false },
+                    )
+                    var total = 0.0
+                    for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
+                    if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped)
+                }
+                val chosen = best!!
+                FlopAnalysis(
+                    spot, m.flopId, m.texture, spot.nodeType, m.rangeAdvantage, m.nutAdvantage,
+                    m.heroVsVillain.rangeEquity(m.hero), chosen.size, chosen.bet,
+                    mdf = null, potOdds = null, minBet = false, donkRead = m.donkRead,
+                    freq = mapOf(FlopAction.CHECK to chosen.fc, betAction to chosen.fb),
+                    terms = mapOf(FlopAction.CHECK to check, betAction to chosen.bets), heroRange = m.hero, capped = chosen.capped,
+                    sizeCandidates = sizes, elasticity = elasticity, geometricSize = BetSizingOptimizer.geometric(spr, p.streetsToRiver),
+                )
+            }
+        }
+    }
+
+    private class SizeResult(
+        val size: Double, val bet: Double, val total: Double, val bets: Array<FlopEvTerms?>,
+        val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray,
+    )
+
+    private fun facingBet(m: FlopMathEngine, ctx: FlopContext, heroIdx: List<Int>): FlopAnalysis {
+        val p = ctx.policy
+        val pot = spot.potBb
+        val bet = minOf(spot.facingBetBb, spot.effectiveStackBb)
+        val potBefore = pot + bet
+        val betRange = if (spot.isDonk) {
+            m.villainModel.firstAction(m.villain, FlopVillainNode.DONK, m.donkRead?.valueShare).raise
+        } else m.villainFirstAction.raise
+        val minBet = m.isMinBet(bet, pot)
+        val call = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
+        val raise = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
+        val fFold = FloatArray(Combos.COUNT); val fCall = FloatArray(Combos.COUNT); val fRaise = FloatArray(Combos.COUNT)
+        val potOdds = bet / (potBefore + bet)
+        for (h in heroIdx) {
+            val c = m.call(h, potBefore, bet, betRange)
+            val r = if (bet < spot.effectiveStackBb) m.raiseVsBet(h, potBefore, bet, betRange) else null
+            call[h] = c; raise[h] = r
+            // Min-bet guard: with pot-odds equity a fold is never allowed.
+            val foldAllowed = !(minBet && c.equity >= potOdds)
+            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, c.ev, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
+            fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
+        }
+        val raiseResp = m.villainModel.respondToRaise(betRange)
+        val ratio = FlopBluffCap.ratio(true, (m.raiseTo(bet) - bet) / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
+            m.villainModel.mdf(potBefore, m.raiseTo(bet) - bet))
+        val capped = FlopBluffCap.apply(
+            heroIdx, m.hero, ratio, fRaise, fCall, fFold,
+            aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
+            isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
+            foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+        )
+        return FlopAnalysis(
+            spot, m.flopId, m.texture, FlopNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage,
+            m.heroVsVillain.rangeEquity(m.hero), null, null,
+            mdf = pot / (pot + bet), potOdds = potOdds, minBet = minBet, donkRead = if (spot.isDonk) m.donkRead else null,
+            freq = mapOf(FlopAction.FOLD to fFold, FlopAction.CALL to fCall, FlopAction.RAISE to fRaise),
+            terms = mapOf(FlopAction.CALL to call, FlopAction.RAISE to raise), heroRange = m.hero, capped = capped,
+        )
     }
 }
 
@@ -130,6 +154,12 @@ class FlopAnalysis(
     val heroRange: FloatArray,
     /** Combos whose bet / raise frequency was cut by [FlopBluffCap] (range-consistency on bluffs). */
     private val capped: BooleanArray = BooleanArray(Combos.COUNT),
+    /** Bet sizes evaluated (fractions of pot) by [BetSizingOptimizer]. */
+    val sizeCandidates: List<Double> = emptyList(),
+    /** Villain continue elasticity vs size (≤ 0; 0 = inelastic). */
+    val elasticity: Double = Double.NaN,
+    /** Geometric size to get stacks in by the river. */
+    val geometricSize: Double = Double.NaN,
 ) {
     fun capped(combo: Int): Boolean = capped[combo]
 

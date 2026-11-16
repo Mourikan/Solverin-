@@ -34,7 +34,7 @@ class FlopTest {
             for (act in a.actions) {
                 val t = a.terms(act, k) ?: continue
                 assertEquals(1.0, t.pFold + t.pCall + t.pRaise, 1e-9, "${Combos.name(k)} $act probabilities")
-                assertEquals(t.pFold * t.foldWin + t.pCall * t.calledEv + t.pRaise * t.evVsRaise - t.penalty, t.ev, 1e-9,
+                assertEquals(t.pFold * t.foldWin + t.pCall * t.calledEv + t.pRaise * t.evVsRaise, t.ev, 1e-9,
                     "${Combos.name(k)} $act EV identity")
             }
             // Max EV: any action played is within the mixing band of the best available one; the only allowed
@@ -42,7 +42,7 @@ class FlopTest {
             val evs = a.actions.associateWith { a.ev(it, k) }.filterValues { !it.isNaN() }
             val bestAct = evs.maxByOrNull { it.value }?.key ?: continue
             val best = evs.getValue(bestAct)
-            val bluffCapped = (bestAct == FlopAction.BET || bestAct == FlopAction.RAISE) && a.capped(k)
+            val bluffCapped = (bestAct == FlopAction.BET || bestAct == FlopAction.RAISE || bestAct == FlopAction.DONK) && a.capped(k)
             for ((act, ev) in evs) if (a.frequency(act, k) > 0f)
                 assertTrue(ev >= best - 0.05 - 1e-9 || bluffCapped || (a.minBet && act != FlopAction.FOLD),
                     "${Combos.name(k)} plays $act below max EV")
@@ -160,6 +160,7 @@ class FlopTest {
     @Test fun oopFirstToActAndCheckRaise() {
         val first = flop.analyze(btnVsBb("Kc8h4h", heroIp = false), FlopContext(Stake.NL50))
         assertEquals(FlopNodeType.FIRST_TO_ACT, first.nodeType)
+        assertTrue(FlopAction.DONK in first.actions && FlopAction.BET !in first.actions, "BB leads are donk bets")
         identities(first)
         val vsCbet = flop.analyze(btnVsBb("Kc8h4h", facingBet = 2.5, heroIp = false), FlopContext(Stake.NL50))
         assertTrue(!vsCbet.spot.isDonk)
@@ -183,5 +184,90 @@ class FlopTest {
             n++
         }
         assertEquals(30, n)
+    }
+
+    @Test fun bitPackedIsomorphismEngine() {
+        val packed = BitPackedArray(1000, 11)
+        for (i in 0 until 1000) packed[i] = (i * 7919) % 2048
+        for (i in 0 until 1000) assertEquals((i * 7919) % 2048, packed[i])
+        assertTrue(FlopIsomorphismEngine.memoryBytes < 45_000, "iso tables ${FlopIsomorphismEngine.memoryBytes} B")
+        val seen = HashSet<Int>()
+        for (a in 0 until 52) for (b in a + 1 until 52) for (c in b + 1 until 52) seen += FlopIsomorphismEngine.rawIndex(a, b, c)
+        assertEquals(FlopIsomorphismEngine.RAW, seen.size)
+        assertEquals(0, seen.min()); assertEquals(FlopIsomorphismEngine.RAW - 1, seen.max())
+        val rnd = java.util.Random(7)
+        val flops = Array(4096) { val d = (0 until 52).shuffled(rnd).take(3); intArrayOf(d[0], d[1], d[2]) }
+        var sink = 0L
+        repeat(20_000) { for (f in flops) sink += FlopIsomorphismEngine.canonicalId(f[0], f[1], f[2]) } // warm-up
+        val t0 = System.nanoTime()
+        repeat(250) { for (f in flops) sink += FlopIsomorphismEngine.canonicalId(f[0], f[1], f[2]) }
+        val ns = (System.nanoTime() - t0).toDouble() / (250 * flops.size)
+        assertTrue(ns < 2_000, "canonical lookup $ns ns")
+        assertTrue(sink != 0L)
+        val t = Textures.of(board("Th6h2h"))
+        assertEquals(SuitTexture.MONOTONE, t.suits)
+        assertEquals(FlopIsomorphismEngine.straightCombos(t.flopId), t.straightCombos)
+    }
+
+    @Test fun equityMatrixMatchesRunoutEnumeration() {
+        val b = board("Jh9h4c")
+        val hero = Combos.fromClassWeights(RangeParser.parse("TT+,AJs+,KQs,QJs,JTs,T9s,98s,AQo+"), Combos.mask(b))
+        val vil = Combos.fromClassWeights(RangeParser.parse("22-99,A2s-ATs,KTs+,QTs+,J9s+,T8s+,97s+,86s+,KJo+,QJo"), Combos.mask(b))
+        val matrix = FlopEquityMatrix(b, hero, vil, stride = 4)
+        val direct = FlopEquity(4)
+        val m = matrix.heroVs(vil); val d = direct.handsVsRange(b, vil, hero)
+        val sub = FloatArray(Combos.COUNT) { if (it % 3 == 0) vil[it] else 0f }
+        val ms = matrix.heroVs(sub); val ds = direct.handsVsRange(b, sub, hero)
+        for (k in 0 until Combos.COUNT) if (hero[k] > 0f) {
+            // Matrix weights each compatible pair equally; direct enumeration weights pairs by sampled runouts.
+            assertEquals(d.equity(k), m.equity(k), 2e-3f, Combos.name(k))
+            assertEquals(ds.equity(k), ms.equity(k), 2e-3f, Combos.name(k))
+        }
+        val mv = matrix.villainVs(hero); val dv = direct.handsVsRange(b, hero, vil)
+        for (k in 0 until Combos.COUNT) if (vil[k] > 0f) assertEquals(dv.equity(k), mv.equity(k), 2e-3f, Combos.name(k))
+        assertTrue(matrix.bytes < 2_000_000)
+    }
+
+    @Test fun geometricAndElasticSizing() {
+        assertEquals((Math.pow(21.0, 1.0 / 3) - 1) / 2, BetSizingOptimizer.geometric(10.0, 3), 1e-12)
+        assertEquals(1.0, BetSizingOptimizer.geometric(1.0, 1), 1e-12) // SPR 1, one street: pot-size bet
+        val p = FlopPolicy()
+        val dryNuts = BetSizingOptimizer.candidates(17.7, 0.08, 0.06, -0.6, p)
+        assertTrue(p.overbet in dryNuts && p.smallBet in dryNuts, "$dryNuts")
+        val noNuts = BetSizingOptimizer.candidates(17.7, -0.02, 0.0, -0.6, p)
+        assertTrue(p.overbet !in noNuts && p.mediumBet in noNuts)
+        val inelastic = BetSizingOptimizer.candidates(17.7, 0.02, 0.0, 0.0, p)
+        assertTrue(inelastic.size > BetSizingOptimizer.candidates(17.7, 0.02, 0.0, -0.6, p).size)
+        assertTrue(BetSizingOptimizer.candidates(0.4, 0.05, 0.05, -0.6, p).all { it <= 0.4 + 1e-9 }, "capped by stack")
+        val locked = flop.analyze(btnVsBb("Td7c3s"), FlopContext(Stake.NL50, locks = FlopNodeLocks.foldToCbet(0.5)))
+        assertEquals(0.0, locked.elasticity, 1e-12)
+        val pop = flop.analyze(btnVsBb("Td7c3s"), FlopContext(Stake.NL50))
+        assertTrue(pop.elasticity < -0.3, "MDF-scaled villain is elastic: ${pop.elasticity}")
+        assertTrue(pop.betSizeFraction!! in pop.sizeCandidates)
+    }
+
+    @Test fun realizationPenalizedByVillainOuts() {
+        val b = board("Th9h3c")
+        val hero = Combos.fromClassWeights(RangeParser.parse("ATs,ATo,KTs,KTo,QTs,QTo"), Combos.mask(b))
+        val drawy = Combos.fromClassWeights(RangeParser.parse("QJs,J8s,87s,KJs,AKs,A5s,QJo,J8o"), Combos.mask(b))
+        val dry = Combos.fromClassWeights(RangeParser.parse("A3s,K3s,Q3s,33,44,55,66,A4o,K4o"), Combos.mask(b))
+        val k = Combos.parse("KdTd")
+        fun r(v: FloatArray) = flop.analyze(FlopSpot(b, hero, v, true, true, 6.0, 97.0), FlopContext(Stake.NL50)).terms(FlopAction.CHECK, k)!!.realization
+        assertTrue(r(drawy) < r(dry), "top pair realizes less vs a draw-heavy range: ${r(drawy)} vs ${r(dry)}")
+    }
+
+    @Test fun nodeLockRecalculationReusesEquityMatrix() {
+        val session = flop.session(btnVsBb("Qd8c5s"))
+        val t0 = System.nanoTime()
+        val a = session.analyze(FlopContext(Stake.NL50))
+        val first = System.nanoTime() - t0
+        val matrix = session.matrix
+        val t1 = System.nanoTime()
+        val b = session.analyze(FlopContext(Stake.NL50, locks = FlopNodeLocks.foldToCbet(0.75)))
+        val second = System.nanoTime() - t1
+        assertTrue(matrix === session.matrix)
+        assertTrue(second * 2 < first, "re-analysis ${second / 1e6} ms vs first ${first / 1e6} ms")
+        assertTrue(b.frequency(FlopAction.BET) >= a.frequency(FlopAction.BET))
+        identities(b)
     }
 }

@@ -19,6 +19,8 @@ data class FlopProfile(
     val raiseValueShare: Double,
     /** Villain's own bet size as a fraction of pot. */
     val betSizeFraction: Double = 0.5,
+    /** Preflop aggressor facing a donk bet: fold frequency at the half-pot reference size. */
+    val foldToDonk: Double = 0.38,
 ) {
     companion object {
         fun population(stake: Stake): FlopProfile = when (stake) {
@@ -35,8 +37,10 @@ data class FlopProfile(
 
 /** Villain flop decision points that can be node-locked. */
 enum class FlopVillainNode {
-    /** Facing hero's bet (c-bet, stab, donk): fold / raise frequencies. */
+    /** Facing hero's bet (c-bet, stab): fold / raise frequencies. */
     VS_BET,
+    /** Preflop aggressor facing hero's donk lead: fold / raise frequencies. */
+    VS_DONK,
     /** Facing hero's raise: fold / re-raise frequencies. */
     VS_RAISE,
     /** Facing hero's all-in: fold frequency. */

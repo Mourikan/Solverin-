@@ -14,7 +14,8 @@ enum class FlopNodeType {
     VS_BET,
 }
 
-enum class FlopAction { CHECK, BET, FOLD, CALL, RAISE }
+/** DONK = hero's lead OOP into the preflop aggressor (FIRST_TO_ACT without initiative). */
+enum class FlopAction { CHECK, BET, DONK, FOLD, CALL, RAISE }
 
 /**
  * Flop spot. Amounts in bb; [potBb] excludes [facingBetBb]; [effectiveStackBb] = stacks behind at the
@@ -55,7 +56,15 @@ class FlopSpot(
 
 /** Tunables of the flop model. */
 data class FlopPolicy(
-    val betSizes: List<Double> = listOf(0.33, 0.75),
+    val smallBet: Double = 0.33,
+    val mediumBet: Double = 0.66,
+    val overbet: Double = 1.25,
+    /** ΔNuts at which the overbet becomes a candidate size. */
+    val overbetNutEdge: Double = 0.04,
+    /** Elasticity above which villain is "inelastic" (adds a larger size); below elasticThreshold adds a smaller one. */
+    val inelasticThreshold: Double = -0.25,
+    val elasticThreshold: Double = -0.9,
+    val streetsToRiver: Int = 3,
     val raiseMultiplier: Double = 3.0,
     /** Bets up to this fraction of the pot (or ≤ 1bb) are min-bets: folding with pot-odds equity is forbidden. */
     val minBetRatio: Double = 0.2,
@@ -64,8 +73,8 @@ data class FlopPolicy(
     val mixBandBb: Double = 0.05,
     val nutFraction: Double = 0.03,
     val strongFraction: Double = 0.15,
-    val textureBetPenalty: Double = 0.5,
-    val texturePassivePenalty: Double = 0.25,
+    /** R_post vulnerability: R × (1 − vulnerabilityK · villain draw density · hand vulnerability). */
+    val vulnerabilityK: Double = 0.6,
     val extractIp: Double = 0.8,
     val extractOop: Double = 0.5,
     val realizationIp: Double = 1.0,
