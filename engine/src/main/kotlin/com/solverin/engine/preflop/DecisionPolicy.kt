@@ -1,19 +1,16 @@
 package com.solverin.engine.preflop
 
 /**
- * EV thresholds -> action frequencies.
- * adjusted EVs: fold 0 | call - callEdge - OOP penalty (or discarded) | raise - raiseEdge.
+ * Stake policy -> action frequencies.
+ * adjusted EVs: fold 0 | call - callEdge(stake) | raise - raiseEdge(stake).
  * Actions within mixBand of the best are mixed linearly by distance.
  */
 class DecisionPolicy(private val p: StakePolicy) {
 
     class Mix(val raise: Float, val call: Float)
 
-    fun adjustedCall(evCall: Double, oop: Boolean, playability: Float): Double {
-        if (evCall.isNaN()) return Double.NEGATIVE_INFINITY
-        if (oop && playability < p.minOopCallPlayability && evCall < p.marginalCallBb) return Double.NEGATIVE_INFINITY
-        return evCall - p.callEdgeBb - if (oop) p.oopCallPenaltyBb else 0.0
-    }
+    fun adjustedCall(evCall: Double): Double =
+        if (evCall.isNaN()) Double.NEGATIVE_INFINITY else evCall - p.callEdgeBb
 
     fun adjustedRaise(evRaise: Double): Double = evRaise - p.raiseEdgeBb
 

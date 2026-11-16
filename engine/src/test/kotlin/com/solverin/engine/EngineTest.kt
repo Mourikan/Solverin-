@@ -6,6 +6,7 @@ import com.solverin.engine.core.Position.*
 import com.solverin.engine.core.Stake
 import com.solverin.engine.math.Blockers
 import com.solverin.engine.math.Realization
+import com.solverin.engine.preflop.ColdCallVerdict
 import com.solverin.engine.preflop.PreflopContext
 import com.solverin.engine.preflop.PreflopEngine
 import com.solverin.engine.range.RangeRepository
@@ -62,13 +63,54 @@ class EngineTest {
         assertTrue(micro.callFrequency() < high.callFrequency(), "${micro.callFrequency()} vs ${high.callFrequency()}")
     }
 
-    @Test fun oopRealizationPenalty() {
-        for (x in listOf("76s", "K9o", "AQo", "22")) {
-            assertTrue(Realization.factor(h(x), 15.0, false, false) < Realization.factor(h(x), 15.0, true, false))
+    @Test fun realizationAndImpliedOdds() {
+        assertTrue(Realization.factor(false, false, 15.0) < Realization.factor(true, false, 15.0))
+        assertTrue(Realization.factor(false, true, 15.0) < Realization.factor(true, true, 15.0))
+        assertTrue(Realization.factor(false, false, 15.0) < Realization.factor(false, true, 15.0))
+        assertEquals(1f, Realization.factor(false, false, 0.0))
+        val imp = engine.implied
+        assertEquals(0.1176f, imp.hit[h("22")], 0.002f) // set or better on the flop: 1 - C(48,3)/C(50,3)
+        assertTrue(imp.hit[h("JTs")] > imp.hit[h("JTo")])
+        assertTrue(imp.hit[h("JTo")] > imp.hit[h("J2o")])
+        val open = engine.villainModel(nl50.villain).open(UTG)
+        val ip = imp.ev(h("77"), open, 6.0, 97.0, true)
+        val oop = imp.ev(h("77"), open, 6.0, 97.0, false)
+        assertTrue(ip > oop && oop > 0)
+        assertTrue(imp.ev(h("KTo"), open, 6.0, 97.0, false) < 0, "KTo dominated vs UTG range")
+        assertEquals(0.0, imp.ev(h("77"), open, 6.0, 0.0, true))
+    }
+
+    @Test fun coldCallModule() {
+        val ipKey = SpotKey.of(Scenario.VS_RFI, BTN, HJ)
+        val ip = assertNotNull(engine.analyze(ipKey, nl50).coldCall)
+        assertTrue(ip.inPosition)
+        assertTrue(ip.frequency > 0.0, "BTN vs MP flats something")
+        val coUtg = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, CO, UTG), nl50).coldCall)
+        assertTrue(coUtg.inPosition)
+        val bb = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, CO), nl50).coldCall)
+        assertTrue(!bb.inPosition)
+        assertTrue(bb.verdict[h("72o")] in setOf(ColdCallVerdict.REJECT_REALIZATION, ColdCallVerdict.REJECT_NEGATIVE_EV))
+        assertEquals(ColdCallVerdict.PREFER_RAISE, bb.verdict[h("AA")])
+        for (x in 0 until HandClass.COUNT) {
+            val t = bb.terms[x]
+            assertEquals(t.ev, (1 - t.pReraise) * t.calledBranch - t.pReraise * t.investment, 1e-9)
         }
-        val lowPlay = Realization.factor(h("K4o"), 15.0, false, false) / Realization.factor(h("K4o"), 15.0, true, false)
-        val hiPlay = Realization.factor(h("JTs"), 15.0, false, false) / Realization.factor(h("JTs"), 15.0, true, false)
-        assertTrue(lowPlay < hiPlay)
+        val micro = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), PreflopContext(Stake.NL2)).coldCall)
+        val noRake = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN),
+            PreflopContext(Stake.NL2, rake = com.solverin.engine.core.RakeStructure(0.0, 0.0))).coldCall)
+        assertTrue(micro.frequency < noRake.frequency, "${micro.frequency} vs ${noRake.frequency}")
+        assertTrue(micro.rakeRejected > 0.0)
+        assertEquals(0.0, noRake.rakeRejected)
+        assertNotNull(engine.analyze(SpotKey.of(Scenario.SQUEEZE, BB, CO, BTN), nl50).coldCall)
+    }
+
+    @Test fun masterEquationConsistency() {
+        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BTN, CO), nl50)
+        for (x in 0 until HandClass.COUNT) {
+            val r = a.raiseTerms!![x]
+            assertEquals(1.0, r.pFold + r.pCall + r.pReraise, 1e-6)
+            assertEquals(r.pFold * r.foldWin + r.pCall * r.calledBranch + r.pReraise * r.evVsReraise, r.ev, 1e-6)
+        }
     }
 
     @Test fun blindDefenseReport() {
@@ -117,7 +159,7 @@ class EngineTest {
         val five = engine.analyze(SpotKey.of(Scenario.VS_5BET, CO, BTN), nl50)
         assertEquals(1f, five.strategy.call(h("AA")))
         assertEquals(1f, five.strategy.fold(h("72o")))
-        assertTrue(five.evRaise[h("AA")].isNaN())
+        assertTrue(five.evRaise(h("AA")).isNaN())
         assertEquals(0.0, five.sprCall, 1e-9)
         val afterSqueeze = engine.analyze(SpotKey.of(Scenario.VS_4BET, BB, CO, BTN), nl50)
         assertEquals(1f, afterSqueeze.strategy.raise(h("AA")))

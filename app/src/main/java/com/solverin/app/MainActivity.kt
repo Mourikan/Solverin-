@@ -120,6 +120,12 @@ class MainActivity : Activity() {
                     s.raiseFrequency() * 100, s.callFrequency() * 100, s.vpip() * 100,
                 ))
                 sb.append(String.format(Locale.US, "\nSPR flop: call %s  raise %s", fmtSpr(a.sprCall), fmtSpr(a.sprRaise)))
+                a.coldCall?.let {
+                    sb.append(String.format(
+                        Locale.US, "\nCold call %s: %.1f%%  descartado por rake %.1f%%",
+                        if (it.inPosition) "IP" else "OOP", it.frequency * 100, it.rakeRejected * 100,
+                    ))
+                }
                 a.blindDefense?.let {
                     sb.append(String.format(
                         Locale.US, "\nDefensa: pot odds %.1f%%  eq req %.1f%% (realizada %.1f%%)  MDF %.1f%%  defend %.1f%%  3bet %.1f%%  %s",
@@ -138,12 +144,27 @@ class MainActivity : Activity() {
         val a = current ?: return
         val d = a.decision(h)
         val m = d.mix
-        tvHand.text = String.format(
-            Locale.US, "%s  R %.0f%%  C %.0f%%  F %.0f%%%s\nEV call %s  EV raise %+.2fbb  eq vs cont %.1f%%  FE %.1f%%",
+        val sb = StringBuilder(String.format(
+            Locale.US, "%s  R %.0f%%  C %.0f%%  F %.0f%%%s",
             HandClass.name(h), m.raise * 100, m.call * 100, m.fold * 100,
             if (d.isValue && m.raise > 0f) "  [valor]" else if (m.raise > 0f) "  [farol]" else "",
-            if (d.evCall.isNaN()) "-" else String.format(Locale.US, "%+.2fbb", d.evCall),
-            if (d.evRaise.isNaN()) 0f else d.evRaise, d.valueEquity * 100, d.foldEquity * 100,
-        )
+        ))
+        d.call?.let { t ->
+            sb.append(String.format(
+                Locale.US, "\nCALL  EV %+.2f = (1-%.2f)·[%.3f·%.2f·%.1f − %.2f − rake %.2f + impl %+.2f] − %.2f·%.2f",
+                t.ev, t.pReraise, t.equity, t.realization, t.potTotal, t.investment, t.rake, t.implied,
+                t.pReraise, t.investment,
+            ))
+        }
+        d.raise?.let { t ->
+            sb.append(String.format(
+                Locale.US, "\nRAISE EV %+.2f = %.2f·%.1f + %.2f·[%.3f·%.2f·%.1f − %.2f − rake %.2f + impl %+.2f] + %.2f·%+.2f",
+                t.ev, t.pFold, t.foldWin, t.pCall, t.equity, t.realization, t.potTotal, t.investment, t.rake, t.implied,
+                t.pReraise, t.evVsReraise,
+            ))
+        }
+        sb.append(String.format(Locale.US, "\neq vs continue %.1f%%  FE %.1f%%", d.valueEquity * 100, d.foldEquity * 100))
+        d.coldCall?.let { sb.append("\nCold call: ").append(it.name) }
+        tvHand.text = sb
     }
 }

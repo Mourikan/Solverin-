@@ -4,8 +4,7 @@ import com.solverin.engine.core.HandClass
 import com.solverin.engine.eval.EquityTable
 import com.solverin.engine.eval.RangeEquity
 import com.solverin.engine.math.Blockers
-import com.solverin.engine.math.Playability
-import com.solverin.engine.math.Realization
+import com.solverin.engine.math.ImpliedOdds
 import com.solverin.engine.model.HandRanking
 import com.solverin.engine.model.VillainModel
 import com.solverin.engine.model.VillainProfile
@@ -15,8 +14,8 @@ import com.solverin.engine.range.SpotKey
 import com.solverin.engine.range.SpotStrategy
 
 /**
- * Rule-based preflop engine: no static charts. Every matrix is computed on demand from
- * EV (equity x realization - rake), playability, position, villain profile and blockers.
+ * Preflop engine: no static charts. Every matrix is computed on demand by [PreflopMathEngine]
+ * (master EV equation) from the villain profile, then mapped to frequencies by the stake policy.
  * Bounded LRU cache; snapshot() persists solved matrices.
  */
 class PreflopEngine(
@@ -25,6 +24,7 @@ class PreflopEngine(
 ) {
     private val equity = RangeEquity(table)
     val ranking = HandRanking(table)
+    val implied = ImpliedOdds(ranking)
 
     private val models = HashMap<VillainProfile, VillainModel>()
     private val cache = object : LinkedHashMap<CacheKey, SpotAnalysis>(cacheSize, 0.75f, true) {
@@ -52,40 +52,28 @@ class PreflopEngine(
     private fun solve(key: SpotKey, ctx: PreflopContext): SpotAnalysis {
         val vm = villainModel(ctx.villain)
         val nodes = SpotBuilder(ctx, vm).build(key)
-        val calc = EvCalculator(ctx, equity)
+        val math = PreflopMathEngine(ctx, equity, implied)
         val policy = DecisionPolicy(ctx.policy)
         val n = HandClass.COUNT
-        val evCall = FloatArray(n) { Float.NaN }
-        val evRaise = FloatArray(n) { Float.NaN }
-        val valueEq = FloatArray(n)
-        val foldEq = FloatArray(n)
-        val b = SpotStrategy.Builder()
         val call = nodes.call
         val raiseNode = nodes.raise
         val first = raiseNode?.opponents?.firstOrNull()
-        val callSpr = call?.let {
-            (ctx.effectiveStackBb - minOf(it.callTo, ctx.effectiveStackBb)).coerceAtLeast(0.0) / (it.potBefore + it.callTo - it.heroInvested)
-        } ?: 0.0
-        // All-in calls have no postflop: no OOP penalty / playability floor.
-        val oop = call != null && !call.heroInPosition && callSpr > ALL_IN_SPR
+        val callTerms = call?.let { c -> Array(n) { h -> math.call(h, c) } }
+        val raiseTerms = raiseNode?.let { r -> Array(n) { h -> math.raise(h, r) } }
+        val valueEq = FloatArray(n)
+        val foldEq = FloatArray(n)
         val surplus = DoubleArray(n)
         val fallbackCall = FloatArray(n)
+        val b = SpotStrategy.Builder()
 
         for (h in 0 until n) {
             var raiseAdj = Double.NEGATIVE_INFINITY
             if (raiseNode != null) {
-                val er = calc.raise(h, raiseNode)
-                evRaise[h] = er.toFloat()
-                valueEq[h] = calc.valueEquity(h, raiseNode)
-                raiseAdj = policy.adjustedRaise(er)
+                valueEq[h] = math.valueEquity(h, raiseNode)
+                raiseAdj = policy.adjustedRaise(raiseTerms!![h].ev)
             }
             if (first != null) foldEq[h] = Blockers.foldProbability(h, first.response.fold, first.response.continueRange).toFloat()
-            var callAdj = Double.NEGATIVE_INFINITY
-            if (call != null) {
-                val ec = calc.call(h, call)
-                evCall[h] = ec.toFloat()
-                callAdj = policy.adjustedCall(ec, oop, Playability.score(h, callSpr))
-            }
+            val callAdj = callTerms?.let { policy.adjustedCall(it[h].ev) } ?: Double.NEGATIVE_INFINITY
             val mix = policy.mix(callAdj, raiseAdj)
             b.raise[h] = mix.raise
             b.call[h] = mix.call
@@ -93,19 +81,24 @@ class PreflopEngine(
             fallbackCall[h] = policy.mix(callAdj, Double.NEGATIVE_INFINITY).call
         }
 
-        BluffBudget.apply(BluffBudget.ratio(key.scenario, ctx.villain), b.raise, b.call, valueEq, surplus, fallbackCall)
+        if (ctx.policy.bluffCap) {
+            BluffBudget.apply(BluffBudget.ratio(key.scenario, ctx.villain), b.raise, b.call, valueEq, surplus, fallbackCall)
+        }
 
         var realSum = 0.0; var realW = 0.0
         for (h in 0 until n) {
             b.value[h] = b.raise[h] > 0f && valueEq[h] >= 0.5f
-            if (call != null && b.call[h] > 0f) {
+            if (callTerms != null && b.call[h] > 0f) {
                 val w = (b.call[h] * HandClass.combos(h)).toDouble()
-                realSum += w * Realization.factor(h, callSpr, call.heroInPosition, false, call.villainRanges.size + 1)
+                realSum += w * callTerms[h].realization
                 realW += w
             }
         }
         val strategy = b.build()
-        val sprCall = if (call != null) callSpr else Double.NaN
+        val sprCall = call?.let { c ->
+            val to = minOf(c.callTo, ctx.effectiveStackBb)
+            (ctx.effectiveStackBb - to) / (c.potBefore + to - c.heroInvested)
+        } ?: Double.NaN
         val sprRaise = raiseNode?.let { r ->
             val x = minOf(r.raiseTo, ctx.effectiveStackBb)
             val pot = r.potBefore + (x - r.heroInvested) + (x - (first?.invested ?: 0.0))
@@ -114,7 +107,9 @@ class PreflopEngine(
         val bd = if (key.scenario == Scenario.VS_RFI && key.hero.isBlind)
             BlindDefenseReport.of(key.hero, key.villain, ctx, vm, strategy, valueEq, if (realW > 0) realSum / realW else 0.0)
         else null
-        return SpotAnalysis(key, strategy, evCall, evRaise, valueEq, foldEq, bd, sprCall, sprRaise)
+        val cc = if (call != null && callTerms != null && ColdCallModule.applies(key))
+            ColdCallModule.analyze(call, callTerms, strategy, ctx.policy) else null
+        return SpotAnalysis(key, strategy, callTerms, raiseTerms, valueEq, foldEq, bd, cc, sprCall, sprRaise)
     }
 
     /** Persists every cached matrix (for a given context) into a compact repository. */
@@ -125,8 +120,4 @@ class PreflopEngine(
     }
 
     fun clearCache() = synchronized(cache) { cache.clear() }
-
-    companion object {
-        private const val ALL_IN_SPR = 0.05
-    }
 }

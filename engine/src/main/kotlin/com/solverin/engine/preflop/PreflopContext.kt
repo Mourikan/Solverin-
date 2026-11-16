@@ -32,28 +32,26 @@ data class Sizing(
 }
 
 /**
- * EV thresholds (bb) per stake. An action must beat fold by its edge to be played.
- * Micro (NL2-NL10): high call edge + OOP penalty + playability floor => marginal flats dropped.
- * NL100-NL200: edges ~0 => strict max-EV vs the profile.
+ * Minimum net EV (bb, after rake) an action must clear vs folding, per stake.
+ * NL2-NL10: calls need a clear margin => marginal cold calls / defenses that rake turns
+ * negative or near-zero are discarded. NL100-NL200: edges ~0 => strict max-EV.
  */
 data class StakePolicy(
     val callEdgeBb: Double,
     val raiseEdgeBb: Double,
     val mixBandBb: Double,
-    val oopCallPenaltyBb: Double,
-    /** OOP flats with playability below this and EV under [marginalCallBb] are discarded. */
-    val minOopCallPlayability: Float,
-    val marginalCallBb: Double = 0.25,
+    /** Range-consistency cap on bluff raises (see BluffBudget). */
+    val bluffCap: Boolean = true,
 ) {
     companion object {
         fun of(stake: Stake): StakePolicy = when (stake) {
-            Stake.NL2 -> StakePolicy(0.12, 0.02, 0.04, 0.08, 0.45f)
-            Stake.NL5 -> StakePolicy(0.10, 0.02, 0.04, 0.07, 0.42f)
-            Stake.NL10 -> StakePolicy(0.08, 0.015, 0.04, 0.06, 0.40f)
-            Stake.NL25 -> StakePolicy(0.05, 0.01, 0.035, 0.045, 0.35f)
-            Stake.NL50 -> StakePolicy(0.03, 0.005, 0.03, 0.035, 0.30f)
-            Stake.NL100 -> StakePolicy(0.015, 0.0, 0.025, 0.025, 0.25f)
-            Stake.NL200 -> StakePolicy(0.0, 0.0, 0.02, 0.02, 0.20f)
+            Stake.NL2 -> StakePolicy(0.10, 0.02, 0.04)
+            Stake.NL5 -> StakePolicy(0.08, 0.02, 0.04)
+            Stake.NL10 -> StakePolicy(0.06, 0.015, 0.04)
+            Stake.NL25 -> StakePolicy(0.04, 0.01, 0.035)
+            Stake.NL50 -> StakePolicy(0.025, 0.005, 0.03)
+            Stake.NL100 -> StakePolicy(0.01, 0.0, 0.025)
+            Stake.NL200 -> StakePolicy(0.0, 0.0, 0.02)
         }
     }
 }

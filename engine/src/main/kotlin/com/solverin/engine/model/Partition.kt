@@ -4,8 +4,8 @@ import com.solverin.engine.core.HandClass
 
 /** Absolute class weights of a range split by response. raise + call + fold = prior. */
 class Partition(val raise: FloatArray, val call: FloatArray, val fold: FloatArray) {
-    val prior: FloatArray get() = FloatArray(HandClass.COUNT) { raise[it] + call[it] + fold[it] }
-    val continueRange: FloatArray get() = FloatArray(HandClass.COUNT) { raise[it] + call[it] }
+    val prior: FloatArray by lazy { FloatArray(HandClass.COUNT) { raise[it] + call[it] + fold[it] } }
+    val continueRange: FloatArray by lazy { FloatArray(HandClass.COUNT) { raise[it] + call[it] } }
 
     companion object {
         /**
