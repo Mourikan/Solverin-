@@ -2,120 +2,109 @@ package com.solverin.engine
 
 import com.solverin.engine.core.HandClass
 import com.solverin.engine.core.Position
+import com.solverin.engine.core.Position.*
 import com.solverin.engine.core.Stake
 import com.solverin.engine.math.Blockers
-import com.solverin.engine.math.Playability
-import com.solverin.engine.math.Sizing
-import com.solverin.engine.math.SprProjector
-import com.solverin.engine.math.VillainProfile
+import com.solverin.engine.math.Realization
 import com.solverin.engine.preflop.PreflopContext
 import com.solverin.engine.preflop.PreflopEngine
-import com.solverin.engine.range.RangeParser
 import com.solverin.engine.range.RangeRepository
 import com.solverin.engine.range.Scenario
 import com.solverin.engine.range.SpotKey
-import com.solverin.engine.range.SpotStrategy
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class EngineTest {
-    private val engine = PreflopEngine()
-    private val repo = engine.repository
+    companion object { val engine = PreflopEngine() }
+    private val nl50 = PreflopContext(Stake.NL50)
+    private fun h(s: String) = HandClass.parse(s)
 
-    private fun valid(s: SpotStrategy) {
-        for (h in 0 until HandClass.COUNT) {
-            assertTrue(s.raise(h) >= 0f && s.call(h) >= 0f && s.raise(h) + s.call(h) <= 1.0001f, HandClass.name(h))
+    private fun allKeys(): List<SpotKey> {
+        val out = ArrayList<SpotKey>()
+        for (s in Scenario.entries) for (hero in Position.entries) for (v in Position.entries) {
+            if (hero == v) continue
+            if (s == Scenario.SQUEEZE) {
+                for (c in Position.entries) if (c != hero && c != v) {
+                    val k = SpotKey.of(s, hero, v, c); if (engine.isValid(k, nl50)) out += k
+                }
+            } else {
+                val k = SpotKey.of(s, hero, v); if (engine.isValid(k, nl50) && (s != Scenario.RFI || v == BB)) out += k
+            }
+        }
+        return out
+    }
+
+    @Test fun allSpotsSolveValid() {
+        val keys = allKeys()
+        assertEquals(5 + 15 + 15 + 15 + 20, keys.size)
+        for (stake in listOf(Stake.NL2, Stake.NL200)) for (k in keys) {
+            val s = engine.strategy(k, PreflopContext(stake))
+            for (x in 0 until HandClass.COUNT) assertTrue(s.raise(x) >= 0 && s.call(x) >= 0 && s.raise(x) + s.call(x) <= 1.0001f)
+            assertEquals(1f, s.raise(h("AA")), "AA must raise in $k")
         }
     }
 
-    @Test fun rfiWidths() {
-        val utg = repo.require(SpotKey.of(Scenario.RFI, Position.UTG)).raiseFrequency()
-        val btn = repo.require(SpotKey.of(Scenario.RFI, Position.BTN)).raiseFrequency()
-        assertTrue(utg in 0.13..0.22, "UTG $utg")
-        assertTrue(btn in 0.38..0.55, "BTN $btn")
+    @Test fun rfiWidensByPosition() {
+        val w = listOf(UTG, HJ, CO, BTN).map { engine.strategy(SpotKey.of(Scenario.RFI, it), nl50).raiseFrequency() }
+        assertEquals(w, w.sorted(), "RFI $w")
+        assertTrue(w[0] in 0.08..0.30, "UTG ${w[0]}")
+        assertTrue(w[3] in 0.30..0.75, "BTN ${w[3]}")
+        assertEquals(1f, engine.strategy(SpotKey.of(Scenario.RFI, UTG), nl50).fold(h("72o")))
     }
 
-    @Test fun repositoryCoversAllNodesAndRoundTrips() {
-        assertEquals(5 + 15 + 15 + 15 + 20, repo.size)
-        assertTrue(repo.distinctStrategies() < repo.size)
-        val out = ByteArrayOutputStream()
-        repo.write(out)
-        assertTrue(out.size() < 16_000, "binary ${out.size()} B")
+    @Test fun microRakeDropsMarginalBlindFlats() {
+        val k = SpotKey.of(Scenario.VS_RFI, BB, BTN)
+        val micro = engine.strategy(k, PreflopContext(Stake.NL2))
+        val high = engine.strategy(k, PreflopContext(Stake.NL200, villain = PreflopContext(Stake.NL2).villain))
+        assertTrue(micro.callFrequency() < high.callFrequency(), "${micro.callFrequency()} vs ${high.callFrequency()}")
+    }
+
+    @Test fun oopRealizationPenalty() {
+        for (x in listOf("76s", "K9o", "AQo", "22")) {
+            assertTrue(Realization.factor(h(x), 15.0, false, false) < Realization.factor(h(x), 15.0, true, false))
+        }
+        val lowPlay = Realization.factor(h("K4o"), 15.0, false, false) / Realization.factor(h("K4o"), 15.0, true, false)
+        val hiPlay = Realization.factor(h("JTs"), 15.0, false, false) / Realization.factor(h("JTs"), 15.0, true, false)
+        assertTrue(lowPlay < hiPlay)
+    }
+
+    @Test fun blindDefenseReport() {
+        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), nl50)
+        val r = assertNotNull(a.blindDefense)
+        assertEquals(1.5 / 4.0, r.mdf, 1e-9)
+        assertEquals(1.5 / 5.5, r.potOdds, 1e-9)
+        assertTrue(r.defend > 0.25, "defend ${r.defend}")
+        assertTrue(r.requiredEquityRealized > r.requiredEquity)
+        assertEquals(1f, a.strategy.fold(h("72o")))
+    }
+
+    @Test fun blockersRaiseFoldEquity() {
+        // Opener continues vs 3bet with the top of his range: an ace blocks it.
+        val a = engine.analyze(SpotKey.of(Scenario.VS_RFI, BTN, CO), nl50)
+        assertTrue(a.foldEquity[h("A5s")] > a.foldEquity[h("65s")], "${a.foldEquity[h("A5s")]} vs ${a.foldEquity[h("65s")]}")
+        // 3bettor bluffs with suited aces: holding an ace blocks his FOLDS -> less fold equity for a 4bet bluff.
+        val b = engine.analyze(SpotKey.of(Scenario.VS_3BET, BTN, BB), nl50)
+        val vm = engine.villainModel(nl50.villain).threeBettorVs4Bet(BB, BTN)
+        assertTrue(Blockers.removal(h("A5s"), vm.fold) > Blockers.removal(h("T9s"), vm.fold))
+        assertTrue(b.foldEquity[h("T9s")] > b.foldEquity[h("A5s")])
+    }
+
+    @Test fun premiumsGetItIn() {
+        val k = SpotKey.of(Scenario.VS_4BET, BTN, CO)
+        assertEquals(1f, engine.strategy(k, nl50).raise(h("AA")))
+        assertEquals(0f, engine.strategy(k, nl50).fold(h("KK")))
+        assertEquals(1f, engine.strategy(k, nl50).fold(h("72o")))
+    }
+
+    @Test fun snapshotRoundTrip() {
+        engine.strategy(SpotKey.of(Scenario.RFI, CO), nl50)
+        val repo = engine.snapshot(nl50)
+        val out = ByteArrayOutputStream(); repo.write(out)
         val back = RangeRepository.read(ByteArrayInputStream(out.toByteArray()))
         for (k in repo.keys()) assertEquals(repo[k], back[k])
-    }
-
-    @Test fun spr() {
-        val p = SprProjector(Sizing(), 100.0)
-        val rfi = p.afterRaise(SpotKey.of(Scenario.RFI, Position.BTN))
-        assertEquals(5.5, rfi.potBb, 1e-9)
-        assertEquals(97.5 / 5.5, rfi.spr, 1e-9)
-        val flat = p.afterCall(SpotKey.of(Scenario.VS_RFI, Position.BB, Position.BTN))!!
-        assertEquals(5.5, flat.potBb, 1e-9)
-        val threeBetIp = p.afterRaise(SpotKey.of(Scenario.VS_RFI, Position.BTN, Position.CO))
-        assertEquals(16.5, threeBetIp.potBb, 1e-9)
-    }
-
-    @Test fun blockers() {
-        val cont = RangeParser.parse("QQ+,AK")
-        val fold = RangeParser.parse("JJ-22,AQs-A2s,KQs-K9s,QJs,JTs,T9s,98s,87s,76s,65s")
-        val ak = HandClass.parse("AKo"); val trash = HandClass.parse("72o")
-        assertTrue(Blockers.removal(ak, cont) > Blockers.removal(trash, cont))
-        val s = Blockers.bluffScores(cont, fold)
-        assertTrue(s[HandClass.parse("A5s")] > s[HandClass.parse("76s")])
-        assertTrue(s[HandClass.parse("KK")] > 0f)
-    }
-
-    @Test fun playabilityBySpr() {
-        val sc = HandClass.parse("76s"); val ako = HandClass.parse("AJo")
-        assertTrue(Playability.score(sc, 20.0) > Playability.score(sc, 2.0))
-        assertTrue(Playability.score(ako, 2.0) > Playability.score(sc, 2.0))
-    }
-
-    @Test fun adjustedStrategiesAreValid() {
-        for (stake in Stake.entries) for (k in repo.keys()) valid(engine.strategy(k, PreflopContext(stake)))
-    }
-
-    @Test fun lowerRakeWidensFlats() {
-        val k = SpotKey.of(Scenario.VS_RFI, Position.BB, Position.BTN)
-        val hiRake = engine.strategy(k, PreflopContext(Stake.NL2, rake = com.solverin.engine.core.RakeStructure(0.07, 10.0)))
-        val loRake = engine.strategy(k, PreflopContext(Stake.NL200))
-        assertTrue(loRake.callFrequency() > hiRake.callFrequency(), "${loRake.callFrequency()} vs ${hiRake.callFrequency()}")
-    }
-
-    @Test fun shortStackCutsSpeculativeFlats() {
-        val k = SpotKey.of(Scenario.VS_RFI, Position.BB, Position.BTN)
-        val h = HandClass.parse("65s")
-        val deep = engine.strategy(k, PreflopContext(Stake.NL50, effectiveStackBb = 150.0)).call(h)
-        val short = engine.strategy(k, PreflopContext(Stake.NL50, effectiveStackBb = 40.0)).call(h)
-        assertTrue(deep > short, "$deep vs $short")
-    }
-
-    @Test fun overfoldingVillainGetsMoreThreeBets() {
-        val k = SpotKey.of(Scenario.VS_RFI, Position.BTN, Position.CO)
-        val nit = engine.strategy(k, PreflopContext(Stake.NL50, villain = VillainProfile.NASH.copy(foldVs3Bet = 0.70)))
-        val station = engine.strategy(k, PreflopContext(Stake.NL50, villain = VillainProfile.NASH.copy(foldVs3Bet = 0.40)))
-        assertTrue(nit.raiseFrequency() > station.raiseFrequency())
-        val a5 = HandClass.parse("A5s")
-        assertTrue(nit.raise(a5) > station.raise(a5))
-    }
-
-    @Test fun neutralContextReproducesBaseline() {
-        val ctx = PreflopContext(Stake.NL50, rake = Stake.REFERENCE_RAKE, villain = VillainProfile.NASH)
-        for (k in repo.keys()) {
-            val b = repo.require(k); val a = engine.strategy(k, ctx)
-            assertEquals(b.raiseFrequency(), a.raiseFrequency(), 0.01, "raise $k")
-            assertEquals(b.callFrequency(), a.callFrequency(), 0.01, "call $k")
-        }
-    }
-
-    @Test fun decideApi() {
-        val mix = engine.decide(SpotKey.of(Scenario.RFI, Position.UTG), "AA", PreflopContext(Stake.NL10))
-        assertEquals(1f, mix.raise)
-        val fold = engine.decide(SpotKey.of(Scenario.RFI, Position.UTG), "72o", PreflopContext(Stake.NL10))
-        assertEquals(1f, fold.fold)
     }
 }

@@ -15,3 +15,14 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+/** Regenerates the bundled 169x169 preflop equity table (Monte Carlo, deterministic). */
+tasks.register<JavaExec>("generateEquityTable") {
+    group = "solverin"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.solverin.engine.eval.EquityTable")
+    args = listOf(
+        layout.projectDirectory.file("src/main/resources/solverin/equity169.bin").asFile.absolutePath,
+        (project.findProperty("samples") ?: "50000").toString(),
+    )
+}

@@ -1,14 +1,13 @@
 package com.solverin.engine.range
 
 import com.solverin.engine.core.HandClass
-import com.solverin.engine.core.Position
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * Immutable spot store. Sorted IntArray keys + binary search: no boxing, no HashMap overhead.
+ * Immutable snapshot of solved spots (persist/restore engine output). Sorted IntArray keys + binary search: no boxing, no HashMap overhead.
  * Template spots share one SpotStrategy instance (~362 B each).
  */
 class RangeRepository private constructor(
@@ -72,37 +71,6 @@ class RangeRepository private constructor(
             val b = Builder()
             repeat(k) { b.put(SpotKey(readInt()), pool[readUnsignedShort()]) }
             b.build()
-        }
-
-        /** Compiles every 6-max preflop node from [BaselineCharts]. */
-        fun baseline(): RangeRepository {
-            val b = Builder()
-            val open = Position.entries.filter { it != Position.BB }
-
-            BaselineCharts.RFI.forEach { (hero, spec) ->
-                b.put(SpotKey.of(Scenario.RFI, hero, Position.BB), spec.compile())
-            }
-            BaselineCharts.VS_RFI.forEach { (pair, spec) ->
-                b.put(SpotKey.of(Scenario.VS_RFI, pair.first, pair.second), spec.compile())
-            }
-
-            val t3 = BaselineCharts.VS_3BET.mapValues { it.value.compile() }
-            val t4 = BaselineCharts.VS_4BET.mapValues { it.value.compile() }
-            val sq = BaselineCharts.SQUEEZE.mapValues { it.value.compile() }
-
-            for (opener in open) for (other in Position.entries) {
-                if (other.ordinal <= opener.ordinal) continue
-                b.put(SpotKey.of(Scenario.VS_3BET, opener, other), t3.getValue(BaselineCharts.threeBetTemplate(opener, other)))
-                b.put(SpotKey.of(Scenario.VS_4BET, other, opener), t4.getValue(BaselineCharts.fourBetTemplate(other, opener)))
-            }
-            for (opener in open) for (caller in Position.entries) {
-                if (caller.ordinal <= opener.ordinal) continue
-                for (hero in Position.entries) {
-                    if (hero.ordinal <= caller.ordinal) continue
-                    b.put(SpotKey.of(Scenario.SQUEEZE, hero, opener, caller), sq.getValue(BaselineCharts.squeezeTemplate(hero)))
-                }
-            }
-            return b.build()
         }
     }
 }

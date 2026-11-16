@@ -11,9 +11,9 @@ import com.solverin.engine.core.HandClass
 import com.solverin.engine.core.Position
 import com.solverin.engine.core.Stake
 import com.solverin.engine.preflop.PreflopContext
+import com.solverin.engine.preflop.SpotAnalysis
 import com.solverin.engine.range.Scenario
 import com.solverin.engine.range.SpotKey
-import com.solverin.engine.range.SpotStrategy
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -32,7 +32,7 @@ class MainActivity : Activity() {
     private lateinit var tvSummary: TextView
     private lateinit var tvHand: TextView
 
-    private var current: SpotStrategy? = null
+    private var current: SpotAnalysis? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,52 +72,66 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun currentKey(): SpotKey? {
+    private fun currentKey(ctx: PreflopContext): SpotKey? {
         val scenario = Scenario.of(spScenario.selectedItemPosition)
         val hero = Position.of(spHero.selectedItemPosition)
         val villain = Position.of(spVillain.selectedItemPosition)
+        if (scenario == Scenario.RFI) {
+            return if (hero == Position.BB) null else SpotKey.of(scenario, hero, Position.BB)
+        }
         if (hero == villain) return null
         val caller = if (scenario == Scenario.SQUEEZE)
             Position.entries.firstOrNull { it.ordinal > villain.ordinal && it.ordinal < hero.ordinal } ?: return null
         else null
-        val key = if (scenario == Scenario.RFI) SpotKey.of(scenario, hero, Position.BB)
-        else SpotKey.of(scenario, hero, villain, caller)
-        return key.takeIf { engine.repository[it] != null }
+        val key = SpotKey.of(scenario, hero, villain, caller)
+        return key.takeIf { engine.isValid(it, ctx) }
     }
 
     private fun refresh() {
         if (!::spStack.isInitialized || spStack.adapter == null) return
-        val key = currentKey()
+        val ctx = PreflopContext(
+            stake = Stake.entries[spStake.selectedItemPosition],
+            effectiveStackBb = stacks[spStack.selectedItemPosition],
+        )
+        val key = currentKey(ctx)
         if (key == null) {
             current = null; grid.strategy = null
             tvSummary.text = "Spot no válido"
             return
         }
-        val ctx = PreflopContext(
-            stake = Stake.entries[spStake.selectedItemPosition],
-            effectiveStackBb = stacks[spStack.selectedItemPosition],
-        )
         worker.execute {
-            val s = engine.strategy(key, ctx)
+            val a = engine.analyze(key, ctx)
             runOnUiThread {
-                current = s
-                grid.strategy = s
-                tvSummary.text = String.format(
+                current = a
+                grid.strategy = a.strategy
+                val s = a.strategy
+                val sb = StringBuilder(String.format(
                     Locale.US, "%s | %s %.0fbb  raise %.1f%%  call %.1f%%  VPIP %.1f%%",
                     key, ctx.stake.name, ctx.effectiveStackBb,
                     s.raiseFrequency() * 100, s.callFrequency() * 100, s.vpip() * 100,
-                )
+                ))
+                a.blindDefense?.let {
+                    sb.append(String.format(
+                        Locale.US, "\nDefensa: pot odds %.1f%%  eq req %.1f%% (realizada %.1f%%)  MDF %.1f%%  defend %.1f%%  3bet %.1f%%  %s",
+                        it.potOdds * 100, it.requiredEquity * 100, it.requiredEquityRealized * 100,
+                        it.mdf * 100, it.defend * 100, it.threeBet * 100, it.style,
+                    ))
+                }
+                tvSummary.text = sb
             }
         }
     }
 
     private fun showHand(h: Int) {
-        val s = current ?: return
-        val m = s.mix(h)
+        val a = current ?: return
+        val d = a.decision(h)
+        val m = d.mix
         tvHand.text = String.format(
-            Locale.US, "%s  R %.0f%%  C %.0f%%  F %.0f%%%s",
+            Locale.US, "%s  R %.0f%%  C %.0f%%  F %.0f%%%s\nEV call %s  EV raise %+.2fbb  eq vs cont %.1f%%  FE %.1f%%",
             HandClass.name(h), m.raise * 100, m.call * 100, m.fold * 100,
-            if (s.isValue(h) && m.raise > 0f) "  [valor]" else if (m.raise > 0f) "  [farol]" else "",
+            if (d.isValue && m.raise > 0f) "  [valor]" else if (m.raise > 0f) "  [farol]" else "",
+            if (d.evCall.isNaN()) "-" else String.format(Locale.US, "%+.2fbb", d.evCall),
+            d.evRaise, d.valueEquity * 100, d.foldEquity * 100,
         )
     }
 }

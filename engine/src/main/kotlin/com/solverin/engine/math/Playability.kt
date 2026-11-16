@@ -66,13 +66,4 @@ object Playability {
         val wConn = 0.2f + 0.1f * t
         return wHigh * HIGH[h] + wNut * NUT[h] + wConn * CONN[h]
     }
-
-    /**
-     * Equity realization multiplier. IP realizes more; playability scales realization.
-     * Range ~0.49 (OOP trash) .. 1.10 (IP premium).
-     */
-    fun realization(h: Int, spr: Double, inPosition: Boolean): Float {
-        val base = if (inPosition) 1.0f else 0.82f
-        return base * (0.6f + 0.5f * score(h, spr))
-    }
 }

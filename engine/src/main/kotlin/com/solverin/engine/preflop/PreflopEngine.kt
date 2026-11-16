@@ -1,72 +1,114 @@
 package com.solverin.engine.preflop
 
 import com.solverin.engine.core.HandClass
-import com.solverin.engine.core.Position
-import com.solverin.engine.range.ActionMix
+import com.solverin.engine.eval.EquityTable
+import com.solverin.engine.eval.RangeEquity
+import com.solverin.engine.math.Blockers
+import com.solverin.engine.math.Playability
+import com.solverin.engine.math.Realization
+import com.solverin.engine.model.HandRanking
+import com.solverin.engine.model.VillainModel
+import com.solverin.engine.model.VillainProfile
 import com.solverin.engine.range.RangeRepository
 import com.solverin.engine.range.Scenario
 import com.solverin.engine.range.SpotKey
 import com.solverin.engine.range.SpotStrategy
 
 /**
- * Entry point. Thread-safe, bounded LRU of adjusted spots (each ~362 B).
+ * Rule-based preflop engine: no static charts. Every matrix is computed on demand from
+ * EV (equity x realization - rake), playability, position, villain profile and blockers.
+ * Bounded LRU cache; snapshot() persists solved matrices.
  */
 class PreflopEngine(
-    val repository: RangeRepository = RangeRepository.baseline(),
-    private val adjuster: ExploitAdjuster = ExploitAdjuster(),
-    private val cacheSize: Int = 64,
+    table: EquityTable = EquityTable.get(),
+    private val cacheSize: Int = 48,
 ) {
-    private val cache = object : LinkedHashMap<CacheKey, SpotStrategy>(cacheSize, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, SpotStrategy>?) = size > cacheSize
+    private val equity = RangeEquity(table)
+    val ranking = HandRanking(table)
+
+    private val models = HashMap<VillainProfile, VillainModel>()
+    private val cache = object : LinkedHashMap<CacheKey, SpotAnalysis>(cacheSize, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, SpotAnalysis>?) = size > cacheSize
     }
 
     private data class CacheKey(val spot: Int, val ctx: PreflopContext)
 
-    fun baseline(key: SpotKey): SpotStrategy = repository.require(key)
+    fun villainModel(p: VillainProfile): VillainModel = synchronized(models) { models.getOrPut(p) { VillainModel(p, ranking) } }
 
-    fun strategy(key: SpotKey, ctx: PreflopContext): SpotStrategy {
+    fun isValid(key: SpotKey, ctx: PreflopContext) = SpotBuilder(ctx, villainModel(ctx.villain)).validate(key)
+
+    fun strategy(key: SpotKey, ctx: PreflopContext): SpotStrategy = analyze(key, ctx).strategy
+
+    fun decide(key: SpotKey, hand: String, ctx: PreflopContext): HandDecision = analyze(key, ctx).decision(HandClass.parse(hand))
+
+    fun analyze(key: SpotKey, ctx: PreflopContext): SpotAnalysis {
         val ck = CacheKey(key.packed, ctx)
         synchronized(cache) { cache[ck]?.let { return it } }
-        val result = adjuster.adjust(key, baseline(key), ctx, villainRanges(key))
+        val result = solve(key, ctx)
         synchronized(cache) { cache[ck] = result }
         return result
     }
 
-    fun decide(key: SpotKey, hand: String, ctx: PreflopContext): ActionMix =
-        strategy(key, ctx).mix(HandClass.parse(hand))
+    private fun solve(key: SpotKey, ctx: PreflopContext): SpotAnalysis {
+        val vm = villainModel(ctx.villain)
+        val nodes = SpotBuilder(ctx, vm).build(key)
+        val calc = EvCalculator(ctx, equity)
+        val policy = DecisionPolicy(ctx.policy)
+        val n = HandClass.COUNT
+        val evCall = FloatArray(n) { Float.NaN }
+        val evRaise = FloatArray(n)
+        val valueEq = FloatArray(n)
+        val foldEq = FloatArray(n)
+        val b = SpotStrategy.Builder()
+        val call = nodes.call
+        val oop = call != null && !call.heroInPosition
+        val first = nodes.raise.opponents.firstOrNull()
+        val callSpr = call?.let { (ctx.effectiveStackBb - it.callTo) / (it.potBefore + it.callTo - it.heroInvested) } ?: 0.0
+        val surplus = DoubleArray(n)
+        val fallbackCall = FloatArray(n)
 
-    /**
-     * Villain's range at the node, split into continue vs fold against hero's raise.
-     * Built from the repository itself: prior (how villain got here) x response chart.
-     */
-    fun villainRanges(key: SpotKey): ExploitAdjuster.VillainRanges? {
-        val h = key.hero; val v = key.villain
-        val prior: FloatArray
-        val cont: FloatArray
-        when (key.scenario) {
-            Scenario.RFI -> {
-                val defend = repository[SpotKey.of(Scenario.VS_RFI, Position.BB, h)] ?: return null
-                prior = FloatArray(HandClass.COUNT) { 1f }
-                cont = defend.continueWeights()
+        for (h in 0 until n) {
+            val er = calc.raise(h, nodes.raise)
+            evRaise[h] = er.toFloat()
+            valueEq[h] = calc.valueEquity(h, nodes.raise)
+            if (first != null) foldEq[h] = Blockers.foldProbability(h, first.response.fold, first.response.continueRange).toFloat()
+            var callAdj = Double.NEGATIVE_INFINITY
+            if (call != null) {
+                val ec = calc.call(h, call)
+                evCall[h] = ec.toFloat()
+                callAdj = policy.adjustedCall(ec, oop, Playability.score(h, callSpr))
             }
-            Scenario.VS_RFI, Scenario.SQUEEZE -> {
-                prior = repository[SpotKey.of(Scenario.RFI, v)]?.raiseWeights() ?: return null
-                cont = repository[SpotKey.of(Scenario.VS_3BET, v, h)]?.continueWeights() ?: return null
-            }
-            Scenario.VS_3BET -> {
-                prior = repository[SpotKey.of(Scenario.VS_RFI, v, h)]?.raiseWeights() ?: return null
-                cont = repository[SpotKey.of(Scenario.VS_4BET, v, h)]?.continueWeights() ?: return null
-            }
-            Scenario.VS_4BET -> {
-                val fourBet = repository[SpotKey.of(Scenario.VS_3BET, v, h)] ?: return null
-                prior = fourBet.raiseWeights()
-                val valueOnly = fourBet.valueRaiseWeights()
-                cont = FloatArray(HandClass.COUNT) { if (prior[it] > 0f) valueOnly[it] / prior[it] else 0f }
+            val raiseAdj = policy.adjustedRaise(er)
+            val mix = policy.mix(callAdj, raiseAdj)
+            b.raise[h] = mix.raise
+            b.call[h] = mix.call
+            surplus[h] = raiseAdj - maxOf(0.0, callAdj)
+            fallbackCall[h] = policy.mix(callAdj, Double.NEGATIVE_INFINITY).call
+        }
+
+        BluffBudget.apply(BluffBudget.ratio(key.scenario, ctx.villain), b.raise, b.call, valueEq, surplus, fallbackCall)
+
+        var realSum = 0.0; var realW = 0.0
+        for (h in 0 until n) {
+            b.value[h] = b.raise[h] > 0f && valueEq[h] >= 0.5f
+            if (call != null && b.call[h] > 0f) {
+                val w = (b.call[h] * HandClass.combos(h)).toDouble()
+                realSum += w * Realization.factor(h, callSpr, call.heroInPosition, false, call.villainRanges.size + 1)
+                realW += w
             }
         }
-        val c = FloatArray(HandClass.COUNT) { prior[it] * cont[it] }
-        val f = FloatArray(HandClass.COUNT) { prior[it] * (1f - cont[it]).coerceAtLeast(0f) }
-        return ExploitAdjuster.VillainRanges(c, f)
+        val strategy = b.build()
+        val bd = if (key.scenario == Scenario.VS_RFI && key.hero.isBlind)
+            BlindDefenseReport.of(key.hero, key.villain, ctx, vm, strategy, valueEq, if (realW > 0) realSum / realW else 0.0)
+        else null
+        return SpotAnalysis(key, strategy, evCall, evRaise, valueEq, foldEq, bd)
+    }
+
+    /** Persists every cached matrix (for a given context) into a compact repository. */
+    fun snapshot(ctx: PreflopContext): RangeRepository {
+        val b = RangeRepository.Builder()
+        synchronized(cache) { cache.filterKeys { it.ctx == ctx }.forEach { (k, a) -> b.put(SpotKey(k.spot), a.strategy) } }
+        return b.build()
     }
 
     fun clearCache() = synchronized(cache) { cache.clear() }
