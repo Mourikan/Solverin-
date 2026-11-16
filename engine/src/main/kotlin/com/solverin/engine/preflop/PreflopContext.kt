@@ -51,10 +51,19 @@ data class StakePolicy(
     /** Range-consistency cap on bluff raises (see BluffBudget). */
     val bluffCap: Boolean = true,
     /**
-     * Max-EV override of the cap: a bluff raise with a real blocker (BlockerFactor < 1) and
-     * EV(raise) >= bluffExemptEvBb is always executed.
+     * Max-EV override of the cap, 3bet / squeeze nodes only: a bluff raise with a real blocker
+     * (BlockerFactor < 1) and EV(raise) >= bluffExemptEvBb is always executed.
      */
     val bluffExemptEvBb: Double = 0.7,
+    /**
+     * 4bet / cold 4bet nodes (VS_3BET, VS_SQUEEZE_*, VS_3BET_COLD): blocker bluffs with EV(raise) >= this get
+     * PRIORITY inside the bluff cap (never a bypass of it).
+     */
+    val bluffExemptFourBetEvBb: Double = 1.3,
+    /** Equity vs villain's continuing range that makes a 4bet / cold 4bet a value raise (AK: see akValueMaxStackBb). */
+    val fourBetValueEquity: Float = 0.5f,
+    /** AKo / AKs are always value 4bets / cold 4bets up to this effective stack (bb). */
+    val akValueMaxStackBb: Double = 150.0,
     /** If true the override also requires villain to over-fold vs MDF: P(fold) > 1 − MDF. */
     val bluffExemptRequiresOverfold: Boolean = true,
 ) {

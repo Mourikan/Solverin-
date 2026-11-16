@@ -11,20 +11,45 @@ import kotlin.math.pow
  * Profile fold rates are measured vs normal-width ranges; this keeps the raising range
  * polarized at a defensible value:bluff ratio, scaled up vs over-folders and down vs stations.
  * Bluffs compete for the budget by EV surplus over their best alternative (blockers included via FE).
- * Max-EV override: hands flagged [exempt] (real blocker + large EV, see StakePolicy) are outside the cap.
+ * Max-EV override: hands flagged [exempt] (3bet / squeeze nodes: real blocker + large EV) are outside the cap;
+ * hands flagged [priority] (4bet / cold 4bet nodes) are served first but stay inside it.
  */
 object BluffBudget {
 
+    /** Bluff:value ratio at the reference fold rate (4bet-class nodes: 100bb jam dynamics => fewer bluffs). */
     private fun base(s: Scenario): Double = when (s) {
         Scenario.RFI -> Double.POSITIVE_INFINITY
         Scenario.VS_RFI -> 1.0
         Scenario.SQUEEZE -> 0.8
-        Scenario.VS_3BET -> 0.7
+        Scenario.VS_3BET -> 0.45
         Scenario.VS_4BET -> 0.25
-        Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> 0.6
+        Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> 0.4
         Scenario.VS_5BET -> 0.0
-        Scenario.VS_3BET_COLD -> 0.5
+        Scenario.VS_3BET_COLD -> 0.35
     }
+
+    /** 4bet-class nodes: hero's raise is a 4bet or cold 4bet (stricter exemption, lower value threshold). */
+    fun isFourBetNode(s: Scenario): Boolean = when (s) {
+        Scenario.VS_3BET, Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER, Scenario.VS_3BET_COLD -> true
+        else -> false
+    }
+
+    /** Cap bypass (3bet / squeeze nodes only); +∞ = no bypass at this node. */
+    fun exemptThreshold(s: Scenario, policy: StakePolicy): Double =
+        if (s == Scenario.VS_RFI || s == Scenario.SQUEEZE) policy.bluffExemptEvBb else Double.POSITIVE_INFINITY
+
+    /** Priority inside the cap (4bet / cold 4bet nodes only); +∞ = none. */
+    fun priorityThreshold(s: Scenario, policy: StakePolicy): Double =
+        if (isFourBetNode(s)) policy.bluffExemptFourBetEvBb else Double.POSITIVE_INFINITY
+
+    /** Value raise test at node [s]. */
+    fun isValue(s: Scenario, hand: Int, valueEquity: Float, policy: StakePolicy, effectiveStackBb: Double): Boolean {
+        if (!isFourBetNode(s)) return valueEquity >= 0.5f
+        if (effectiveStackBb <= policy.akValueMaxStackBb && hand in AK) return true
+        return valueEquity >= policy.fourBetValueEquity
+    }
+
+    private val AK = intArrayOf(HandClass.parse("AKs"), HandClass.parse("AKo"))
 
     /** Equilibrium-reference fold rate of the first opponent at each node. */
     fun referenceFold(s: Scenario): Double = when (s) {
@@ -61,7 +86,7 @@ object BluffBudget {
      */
     fun apply(
         ratio: Double, raise: FloatArray, call: FloatArray, valueEq: FloatArray,
-        surplus: DoubleArray, fallbackCall: FloatArray, exempt: BooleanArray? = null,
+        surplus: DoubleArray, fallbackCall: FloatArray, exempt: BooleanArray? = null, priority: BooleanArray? = null,
     ) {
         if (ratio.isInfinite()) return
         var value = 0.0
@@ -72,7 +97,8 @@ object BluffBudget {
             else if (exempt == null || !exempt[h]) bluffs += h
         }
         var budget = value * ratio
-        bluffs.sortByDescending { surplus[it] }
+        // Priority bluffs (blocker + high EV at 4bet nodes) take the slots first, then by EV surplus.
+        bluffs.sortWith(compareByDescending<Int> { if (priority?.get(it) == true) 1 else 0 }.thenByDescending { surplus[it] })
         for (h in bluffs) {
             val combos = raise[h] * HandClass.combos(h)
             val keep = when {

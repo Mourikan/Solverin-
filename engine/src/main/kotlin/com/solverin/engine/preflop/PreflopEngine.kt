@@ -110,22 +110,30 @@ class PreflopEngine(
             fallbackCall[h] = policy.mix(callAdj, Double.NEGATIVE_INFINITY).call
         }
 
+        val valueMark = FloatArray(n) { h ->
+            if (BluffBudget.isValue(key.scenario, h, valueEq[h], ctx.policy, ctx.effectiveStackBb)) 1f else 0f
+        }
         if (ctx.policy.bluffCap) {
             val fold = first?.let { BluffBudget.foldShare(it.response) } ?: 1.0
             val p = ctx.policy
-            val exempt = raiseTerms?.let { rt ->
-                BooleanArray(n) { h ->
-                    val t = rt[h]
-                    t.blockerFactor < 1.0 && t.ev >= p.bluffExemptEvBb &&
-                        (!p.bluffExemptRequiresOverfold || t.pFold > 1.0 - t.mdf)
+            fun blockerBluffs(threshold: Double): BooleanArray? =
+                if (threshold.isInfinite()) null else raiseTerms?.let { rt ->
+                    BooleanArray(n) { h ->
+                        val t = rt[h]
+                        t.blockerFactor < 1.0 && t.ev >= threshold &&
+                            (!p.bluffExemptRequiresOverfold || t.pFold > 1.0 - t.mdf)
+                    }
                 }
-            }
-            BluffBudget.apply(BluffBudget.ratio(key.scenario, fold), b.raise, b.call, valueEq, surplus, fallbackCall, exempt)
+            BluffBudget.apply(
+                BluffBudget.ratio(key.scenario, fold), b.raise, b.call, valueMark, surplus, fallbackCall,
+                exempt = blockerBluffs(BluffBudget.exemptThreshold(key.scenario, p)),
+                priority = blockerBluffs(BluffBudget.priorityThreshold(key.scenario, p)),
+            )
         }
 
         var realSum = 0.0; var realW = 0.0
         for (h in 0 until n) {
-            b.value[h] = b.raise[h] > 0f && valueEq[h] >= 0.5f
+            b.value[h] = b.raise[h] > 0f && valueMark[h] >= 0.5f
             if (callTerms != null && b.call[h] > 0f) {
                 val w = (b.call[h] * HandClass.combos(h)).toDouble()
                 realSum += w * callTerms[h].realization
