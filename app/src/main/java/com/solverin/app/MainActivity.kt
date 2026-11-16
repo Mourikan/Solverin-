@@ -85,7 +85,7 @@ class MainActivity : Activity() {
         if (hero == villain) return null
         val picked = spThird.selectedItemPosition.let { if (it == 0) null else Position.of(it - 1) }
         val candidates: List<Position?> = when (scenario) {
-            Scenario.SQUEEZE, Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER ->
+            Scenario.SQUEEZE, Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER, Scenario.VS_3BET_COLD ->
                 picked?.let { listOf(it) } ?: Position.entries
             Scenario.VS_4BET -> picked?.let { listOf(it) } ?: listOf(null)
             else -> listOf(null)

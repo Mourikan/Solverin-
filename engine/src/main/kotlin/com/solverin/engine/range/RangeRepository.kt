@@ -55,11 +55,12 @@ class RangeRepository private constructor(
 
     companion object {
         private const val MAGIC = 0x534F4C56 // "SOLV"
-        private const val VERSION = 1
+        private const val VERSION = 2
 
         fun read(input: InputStream): RangeRepository = DataInputStream(input).run {
             require(readInt() == MAGIC) { "Bad magic" }
-            require(readUnsignedShort() == VERSION) { "Unsupported version" }
+            val version = readUnsignedShort()
+            require(version == 1 || version == VERSION) { "Unsupported version $version" }
             val n = readUnsignedShort()
             val pool = Array(n) {
                 val r = ByteArray(HandClass.COUNT).also { readFully(it) }
@@ -69,7 +70,10 @@ class RangeRepository private constructor(
             }
             val k = readUnsignedShort()
             val b = Builder()
-            repeat(k) { b.put(SpotKey(readInt()), pool[readUnsignedShort()]) }
+            repeat(k) {
+                val raw = readInt()
+                b.put(if (version == 1) SpotKey.fromV1(raw) else SpotKey(raw), pool[readUnsignedShort()])
+            }
             b.build()
         }
     }

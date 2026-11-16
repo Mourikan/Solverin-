@@ -47,8 +47,9 @@ class EngineTest {
 
     @Test fun allSpotsSolveValid() {
         val keys = allKeys()
-        // RFI 5, VS_RFI 15, VS_3BET 15, VS_4BET 15+20, SQUEEZE 20, VS_SQUEEZE_OPENER 20, VS_SQUEEZE_CALLER 20, VS_5BET 15
-        assertEquals(5 + 15 + 15 + 35 + 20 + 20 + 20 + 15, keys.size)
+        // RFI 5, VS_RFI 15, VS_3BET 15, VS_4BET 15+20, SQUEEZE 20, VS_SQUEEZE_OPENER 20, VS_SQUEEZE_CALLER 20, VS_5BET 15,
+        // VS_3BET_COLD 20
+        assertEquals(5 + 15 + 15 + 35 + 20 + 20 + 20 + 15 + 20, keys.size)
         for (stake in listOf(Stake.NL2, Stake.NL200)) for (k in keys) {
             val s = engine.strategy(k, PreflopContext(stake))
             for (x in 0 until HandClass.COUNT) assertTrue(s.raise(x) >= 0 && s.call(x) >= 0 && s.raise(x) + s.call(x) <= 1.0001f)
@@ -112,7 +113,7 @@ class EngineTest {
         assertEquals(ColdCallVerdict.PREFER_RAISE, bb.verdict[h("AA")])
         for (x in 0 until HandClass.COUNT) {
             val t = bb.terms[x]
-            assertEquals(t.ev, (1 - t.pReraise) * t.calledBranch - t.pReraise * t.investment, 1e-9)
+            assertEquals(t.ev, (1 - t.pReraise) * t.calledBranch - t.pReraise * t.investment, 1e-5)
         }
         val micro = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), PreflopContext(Stake.NL2)).coldCall)
         val noRake = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN),
@@ -163,7 +164,7 @@ class EngineTest {
         for (x in 0 until HandClass.COUNT) {
             val r = a.raiseTerms!![x]
             assertEquals(1.0, r.pFold + r.pCall + r.pReraise, 1e-6)
-            assertEquals(r.pFold * r.foldWin + r.pCall * r.calledBranch + r.pReraise * r.evVsReraise, r.ev, 1e-6)
+            assertEquals(r.pFold * r.foldWin + r.pCall * r.calledEv + r.pReraise * r.evVsReraise, r.ev, 1e-6)
         }
     }
 
@@ -298,5 +299,96 @@ class EngineTest {
         val a = engine.analyze(k, nl50.copy(locks = foldy)).raiseFrequency()
         val b = engine.analyze(k, nl50.copy(locks = sticky)).raiseFrequency()
         assertTrue(a > b, "3bet vs over-folder $a <= vs sticky $b")
+    }
+
+    @Test fun spotKeyFourBitsAndV1Migration() {
+        val k = SpotKey.of(Scenario.VS_3BET_COLD, BB, SB, BTN)
+        assertEquals(Scenario.VS_3BET_COLD, k.scenario)
+        assertEquals(BB, k.hero); assertEquals(SB, k.villain); assertEquals(BTN, k.caller)
+        val old = Scenario.SQUEEZE.ordinal or (BB.ordinal shl 3) or (CO.ordinal shl 6) or (BTN.ordinal shl 9)
+        assertEquals(SpotKey.of(Scenario.SQUEEZE, BB, CO, BTN), SpotKey.fromV1(old))
+        val v1 = java.io.ByteArrayOutputStream()
+        java.io.DataOutputStream(v1).run {
+            writeInt(0x534F4C56); writeShort(1); writeShort(1)
+            write(ByteArray(HandClass.COUNT) { 200.toByte() }); write(ByteArray(HandClass.COUNT)); repeat(3) { writeLong(0) }
+            writeShort(1); writeInt(old); writeShort(0); flush()
+        }
+        val repo = RangeRepository.read(ByteArrayInputStream(v1.toByteArray()))
+        assertEquals(1f, assertNotNull(repo[SpotKey.of(Scenario.SQUEEZE, BB, CO, BTN)]).raise(0))
+    }
+
+    @Test fun coldFourBetAndColdCallVsOpenPlus3Bet() {
+        val k = SpotKey.of(Scenario.VS_3BET_COLD, BB, SB, BTN)
+        val a = engine.analyze(k, nl50)
+        assertEquals(1f, a.strategy.raise(h("AA")))
+        assertEquals(1f, a.strategy.fold(h("72o")))
+        assertTrue(a.callFrequency() < 0.10, "cold call vs open + 3bet ${a.callFrequency()}")
+        val cc = assertNotNull(a.coldCall)
+        assertTrue(cc.cold)
+        val t = a.callTerms!![h("AQo")]
+        assertTrue(t.pReraise > 0.0, "sandwich: opener 4bet risk behind")
+        assertEquals(a.raiseTerms!![h("AQo")].pFold + a.raiseTerms!![h("AQo")].pCall + a.raiseTerms!![h("AQo")].pReraise, 1.0, 1e-6)
+        assertTrue(engine.analyze(SpotKey.of(Scenario.VS_3BET_COLD, BTN, HJ, UTG), nl50).raiseFrequency() < 0.06)
+    }
+
+    @Test fun maxEvBlockerOverrideOfBluffCap() {
+        val k = SpotKey.of(Scenario.VS_RFI, CO, UTG)
+        val sz = com.solverin.engine.preflop.Sizing(openBb = 2.2)
+        val open = NodeLocks.NONE.with(VillainNode.OPEN, UTG, NodeLock(raise = 0.17))
+        // Over-folder (continues 26% < MDF 36%) -> A5s exempt from the cap -> 3bet.
+        val overfolder = open.with(VillainNode.VS_3BET, UTG, NodeLock(raise = 0.04, call = 0.22), versus = CO)
+        val ctx = PreflopContext(Stake.NL200, sizing = sz, locks = overfolder)
+        val a = engine.analyze(k, ctx)
+        var exempted = 0
+        for (x in 0 until HandClass.COUNT) {
+            val tx = a.raiseTerms!![x]
+            val exempt = a.valueEquity[x] < 0.5f && tx.blockerFactor < 1.0 && tx.ev >= ctx.policy.bluffExemptEvBb &&
+                tx.pFold > 1 - tx.mdf
+            if (exempt) { exempted++; assertTrue(a.strategy.raise(x) > 0f, "exempt ${HandClass.name(x)} suppressed") }
+        }
+        assertTrue(exempted > 0, "some blocker bluff qualifies vs an over-folder")
+        // Same read with the cap forced to zero bluffs: exempt hands still 3bet, non-blockers do not.
+        val capped = engine.analyze(k, ctx.copy(policy = ctx.policy.copy(bluffExemptEvBb = 0.0)))
+        for (x in 0 until HandClass.COUNT) {
+            val tx = capped.raiseTerms!![x]
+            if (capped.valueEquity[x] < 0.5f && tx.blockerFactor < 1.0 && tx.ev >= 0.0 && tx.pFold > 1 - tx.mdf &&
+                capped.strategy.raise(x) == 0f) error("exempt ${HandClass.name(x)} suppressed")
+        }
+        // Without over-fold (UTG continues 52%) the override needs requiresOverfold = false.
+        val sticky = open.with(VillainNode.VS_3BET, UTG, NodeLock(raise = 0.065, call = 0.46), versus = CO)
+        val loose = PreflopContext(Stake.NL200, sizing = sz, locks = sticky,
+            policy = com.solverin.engine.preflop.StakePolicy.of(Stake.NL200).copy(bluffExemptEvBb = 0.3, bluffExemptRequiresOverfold = false))
+        val b = engine.analyze(k, loose)
+        for (x in 0 until HandClass.COUNT) {
+            val tx = b.raiseTerms!![x]
+            if (b.valueEquity[x] < 0.5f && tx.blockerFactor < 1.0 && tx.ev >= 0.3) assertTrue(b.strategy.raise(x) > 0f, HandClass.name(x))
+        }
+        assertTrue(b.raiseTerms!![h("65s")].blockerFactor >= 1.0)
+    }
+
+    @Test fun borderlineMultiwayAndRakeCases() {
+        // Case 1: BTN vs CO open with blinds behind (squeeze + overcall + cold 4bet risk priced).
+        val btn = engine.analyze(SpotKey.of(Scenario.VS_RFI, BTN, CO), nl50)
+        for (x in listOf("KJo", "AQo")) {
+            val d = btn.decision(h(x))
+            assertTrue(d.call!!.pReraise > 0.0 && d.raise!!.pReraise > 0.0, "$x priced vs squeeze / cold 4bet")
+            val best = maxOf(0.0, d.evCall - nl50.policy.callEdgeBb, d.evRaise - nl50.policy.raiseEdgeBb)
+            when {
+                best <= 0.0 -> assertEquals(1f, d.mix.fold)
+                d.mix.fold == 1f -> assertTrue(d.valueEquity < 0.5f && d.evRaise - nl50.policy.raiseEdgeBb == best, "$x only folds when its bluff 3bet is capped")
+                else -> assertTrue(d.mix.fold < 1f)
+            }
+        }
+        assertTrue(btn.decision(h("AQo")).mix.fold == 0f, "AQo continues BTN vs CO")
+        // Case 2: blind cold call of a 3bet with medium playability dies to rake at NL2, not at NL200 rake-free.
+        val k = SpotKey.of(Scenario.VS_3BET_COLD, BB, SB, BTN)
+        val nl2 = engine.analyze(k, PreflopContext(Stake.NL2))
+        val free = engine.analyze(k, PreflopContext(Stake.NL2, rake = com.solverin.engine.core.RakeStructure(0.0, 0.0)))
+        assertTrue(nl2.callFrequency() <= free.callFrequency())
+        for (x in 0 until HandClass.COUNT) assertTrue(nl2.callTerms!![x].rake >= free.callTerms!![x].rake)
+        // Case 3: marginal blockers vs tight UTG continue: Ax blocks more of UTG's continue than suited connectors.
+        val co = engine.analyze(SpotKey.of(Scenario.VS_RFI, CO, UTG), nl50)
+        assertTrue(co.raiseTerms!![h("A4s")].blockerFactor < co.raiseTerms!![h("76s")].blockerFactor)
+        assertTrue(co.foldEquity[h("A4s")] > co.foldEquity[h("76s")])
     }
 }

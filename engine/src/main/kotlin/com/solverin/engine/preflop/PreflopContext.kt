@@ -26,6 +26,8 @@ data class Sizing(
     val threeBetIpMult: Double = 3.0,
     val threeBetOopMult: Double = 4.0,
     val fourBetMult: Double = 2.25,
+    /** Cold 4bet over an open + 3bet (dead money of the opener => slightly larger). */
+    val coldFourBetMult: Double = 2.4,
     val squeezeBaseMult: Double = 4.0,
     val squeezePerCallerMult: Double = 1.0,
 ) {
@@ -33,6 +35,7 @@ data class Sizing(
     fun threeBet(opener: Position, threeBettor: Position) =
         open(opener) * if (threeBettor.isInPositionVs(opener)) threeBetIpMult else threeBetOopMult
     fun fourBet(threeBetTo: Double) = threeBetTo * fourBetMult
+    fun coldFourBet(threeBetTo: Double) = threeBetTo * coldFourBetMult
     fun squeeze(opener: Position, callers: Int) = open(opener) * (squeezeBaseMult + squeezePerCallerMult * callers)
 }
 
@@ -47,6 +50,13 @@ data class StakePolicy(
     val mixBandBb: Double,
     /** Range-consistency cap on bluff raises (see BluffBudget). */
     val bluffCap: Boolean = true,
+    /**
+     * Max-EV override of the cap: a bluff raise with a real blocker (BlockerFactor < 1) and
+     * EV(raise) >= bluffExemptEvBb is always executed.
+     */
+    val bluffExemptEvBb: Double = 0.7,
+    /** If true the override also requires villain to over-fold vs MDF: P(fold) > 1 − MDF. */
+    val bluffExemptRequiresOverfold: Boolean = true,
 ) {
     companion object {
         fun of(stake: Stake): StakePolicy = when (stake) {

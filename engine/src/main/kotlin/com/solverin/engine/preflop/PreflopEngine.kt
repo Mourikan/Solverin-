@@ -49,7 +49,7 @@ class PreflopEngine(
     fun reach(key: SpotKey, ctx: PreflopContext): FloatArray? {
         val h = key.hero; val v = key.villain
         return when (key.scenario) {
-            Scenario.RFI, Scenario.VS_RFI, Scenario.SQUEEZE -> null
+            Scenario.RFI, Scenario.VS_RFI, Scenario.SQUEEZE, Scenario.VS_3BET_COLD -> null
             Scenario.VS_3BET -> analyze(SpotKey.of(Scenario.RFI, h), ctx).strategy.raiseWeights()
             Scenario.VS_SQUEEZE_OPENER -> analyze(SpotKey.of(Scenario.RFI, h), ctx).strategy.raiseWeights()
             Scenario.VS_SQUEEZE_CALLER -> {
@@ -86,7 +86,7 @@ class PreflopEngine(
         val n = HandClass.COUNT
         val call = nodes.call
         val raiseNode = nodes.raise
-        val first = raiseNode?.opponents?.firstOrNull()
+        val first = raiseNode?.mainOpponent
         val callTerms = call?.let { c -> Array(n) { h -> math.call(h, c) } }
         val raiseTerms = raiseNode?.let { r -> Array(n) { h -> math.raise(h, r) } }
         val valueEq = FloatArray(n)
@@ -112,7 +112,15 @@ class PreflopEngine(
 
         if (ctx.policy.bluffCap) {
             val fold = first?.let { BluffBudget.foldShare(it.response) } ?: 1.0
-            BluffBudget.apply(BluffBudget.ratio(key.scenario, fold), b.raise, b.call, valueEq, surplus, fallbackCall)
+            val p = ctx.policy
+            val exempt = raiseTerms?.let { rt ->
+                BooleanArray(n) { h ->
+                    val t = rt[h]
+                    t.blockerFactor < 1.0 && t.ev >= p.bluffExemptEvBb &&
+                        (!p.bluffExemptRequiresOverfold || t.pFold > 1.0 - t.mdf)
+                }
+            }
+            BluffBudget.apply(BluffBudget.ratio(key.scenario, fold), b.raise, b.call, valueEq, surplus, fallbackCall, exempt)
         }
 
         var realSum = 0.0; var realW = 0.0

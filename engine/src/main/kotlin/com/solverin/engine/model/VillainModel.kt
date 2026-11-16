@@ -97,4 +97,26 @@ class VillainModel(
         val c = lock(VillainNode.VS_JAM, o, null)?.call ?: (1 - profile.foldTo5Bet)
         Partition.split(openerVsSqueeze(o).raise, 0.0, c, 1.0, ranking)
     }
+
+    /** Player [p] not yet in, facing an open from [o] and a 3bet: cold 4bet / cold call / fold. */
+    fun coldVs3Bet(p: Position, o: Position): Partition = m("c3b$p$o") {
+        val l = lock(VillainNode.COLD_VS_3BET, p, o)
+        val r = l?.raise ?: (profile.cold3Bet * COLD_4BET_FACTOR)
+        val c = l?.call ?: (profile.coldCall * COLD_CALL_3BET_FACTOR)
+        Partition.split(uniform, r, c, l?.valueShare ?: 1.0, ranking)
+    }
+
+    /** Opener [o] whose open was 3bet by [tb] and then cold 4bet: mostly folds. */
+    fun openerVsCold4Bet(o: Position, tb: Position): Partition = m("oc4$o$tb") {
+        val l = lock(VillainNode.VS_COLD_4BET, o, tb)
+        val r = l?.raise ?: (profile.fourBet * COLD_4BET_FACTOR)
+        val c = l?.call ?: (profile.fourBet * COLD_4BET_FACTOR)
+        Partition.split(open(o), r, c, l?.valueShare ?: 1.0, ranking)
+    }
+
+    companion object {
+        /** Cold 4bets / cold calls of a 3bet are far rarer than 3bets / flats vs an open. */
+        const val COLD_4BET_FACTOR = 0.35
+        const val COLD_CALL_3BET_FACTOR = 0.25
+    }
 }

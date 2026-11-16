@@ -24,6 +24,8 @@ class Opponent(
     val squeezeBehind: Double = 0.0,
     /** P(a player left to act overcalls after this villain flats) — pot goes multiway. */
     val overcallBehind: Double = 0.0,
+    /** Main opponent: drives reported terms, value/fold equity and the bluff cap (default: first opponent). */
+    val main: Boolean = false,
 )
 
 /** Hero's aggressive option. All amounts in bb, totals per player. */
@@ -49,7 +51,13 @@ class CallNode(
     val squeezeRisk: Double,
     /** Pot level after the flat (1 = single-raised, 2 = 3bet pot, ...). */
     val potLevel: Int,
+    /** P(a player left to act overcalls) — expected multiway realization loss. */
+    val overcallBehind: Double = 0.0,
 )
+
+/** Index of the main opponent of a raise node. */
+val RaiseNode.mainIndex: Int get() = opponents.indexOfFirst { it.main }.let { if (it < 0) 0 else it }
+val RaiseNode.mainOpponent: Opponent? get() = opponents.getOrNull(mainIndex)
 
 class SpotNodes(val call: CallNode?, val raise: RaiseNode?) {
     init { require(call != null || raise != null) }

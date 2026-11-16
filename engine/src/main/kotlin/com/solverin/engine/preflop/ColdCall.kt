@@ -7,7 +7,8 @@ import com.solverin.engine.range.SpotStrategy
 
 /**
  * Call module for every node with a passive option, all positions:
- *  cold call vs open (IP: MP/CO/BTN, OOP: SB/BB), overcall vs open + caller, flat vs 3bet, vs 4bet,
+ *  cold call vs open (IP: MP/CO/BTN, OOP: SB/BB), overcall vs open + caller, cold call of an open + 3bet,
+ *  flat vs 3bet, vs 4bet,
  *  vs squeeze (opener / caller) and vs 5bet jam. Every flat is priced by the master equation and kept
  *  only if EV_call − callEdge(stake) beats both fold and the raise. Each rejection names the killing term.
  */
@@ -16,7 +17,7 @@ enum class ColdCallVerdict {
 }
 
 class ColdCallAnalysis(
-    /** True for a cold call (no voluntary chips in yet): VS_RFI and SQUEEZE overcall. */
+    /** True for a cold call (no voluntary chips in yet): VS_RFI, SQUEEZE overcall, VS_3BET_COLD. */
     val cold: Boolean,
     val inPosition: Boolean,
     val terms: Array<EvTerms>,
@@ -33,7 +34,8 @@ class ColdCallAnalysis(
 
 object ColdCallModule {
 
-    fun isCold(key: SpotKey): Boolean = key.scenario == Scenario.VS_RFI || key.scenario == Scenario.SQUEEZE
+    fun isCold(key: SpotKey): Boolean =
+        key.scenario == Scenario.VS_RFI || key.scenario == Scenario.SQUEEZE || key.scenario == Scenario.VS_3BET_COLD
 
     private fun withoutSqueeze(t: EvTerms, branch: Double) = (1 - t.pReraise) * branch - t.pReraise * t.investment
 

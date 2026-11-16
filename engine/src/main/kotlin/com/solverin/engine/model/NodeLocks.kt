@@ -20,6 +20,10 @@ enum class VillainNode {
     VS_SQUEEZE_OPENER,
     /** Cold caller facing a squeeze: raise = 4bet, call = flat. */
     VS_SQUEEZE_CALLER,
+    /** Player not yet in facing an open + 3bet: raise = cold 4bet, call = cold call. */
+    COLD_VS_3BET,
+    /** Opener whose open was 3bet and then cold 4bet: raise = 5bet jam, call = flat. */
+    VS_COLD_4BET,
 }
 
 /** Locked response. Null fields keep the profile value. valueShare: 1 = linear, 0.5 = fully polarized. */

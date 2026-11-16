@@ -1,11 +1,18 @@
 package com.solverin.engine.model
 
 import com.solverin.engine.core.HandClass
+import com.solverin.engine.eval.CardRemoval
 
 /** Absolute class weights of a range split by response. raise + call + fold = prior. */
 class Partition(val raise: FloatArray, val call: FloatArray, val fold: FloatArray) {
     val prior: FloatArray by lazy { FloatArray(HandClass.COUNT) { raise[it] + call[it] + fold[it] } }
     val continueRange: FloatArray by lazy { FloatArray(HandClass.COUNT) { raise[it] + call[it] } }
+
+    private val total: Double by lazy { CardRemoval.total(prior) }
+    /** Unblocked shares of the prior range. */
+    val raiseShare: Double by lazy { if (total > 0) CardRemoval.total(raise) / total else 0.0 }
+    val callShare: Double by lazy { if (total > 0) CardRemoval.total(call) / total else 0.0 }
+    val foldShare: Double by lazy { if (total > 0) CardRemoval.total(fold) / total else 0.0 }
 
     companion object {
         /**

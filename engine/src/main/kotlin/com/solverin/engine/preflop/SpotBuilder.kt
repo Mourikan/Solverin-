@@ -34,6 +34,10 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 o != Position.BB && o.ordinal < h.ordinal && h.ordinal < v.ordinal
             }
             Scenario.VS_5BET -> noCaller && h != Position.BB && v.ordinal > h.ordinal
+            Scenario.VS_3BET_COLD -> {
+                val o = key.caller ?: return false
+                o != Position.BB && o.ordinal < v.ordinal && v.ordinal < h.ordinal
+            }
         }
     }
 
@@ -78,10 +82,18 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 val o = sz.open(v)
                 val pot = o + blinds - v.blindBb
                 val y = sz.threeBet(v, h)
-                val call = CallNode(pot, h.blindBb, o, listOf(vm.open(v)), h.isInPositionVs(v), squeezeRisk(h, v), 1)
+                var noOver = 1.0
+                for (q in behind(h, v)) noOver *= 1 - vm.defenseFrequencies(q, v).second
+                val call = CallNode(pot, h.blindBb, o, listOf(vm.open(v)), h.isInPositionVs(v), squeezeRisk(h, v), 1,
+                    overcallBehind = 1 - noOver)
+                // Players behind act first on hero's 3bet (cold 4bet / cold call), then the opener.
+                val cold = behind(h, v).map { q ->
+                    Opponent(q, vm.coldVs3Bet(q, v), q.blindBb, sz.coldFourBet(y), null, stack, h.isInPositionVs(q))
+                }
                 val opp = Opponent(v, vm.openerVs3Bet(v, h), o, sz.fourBet(y),
-                    vm.fourBettorVsJam(v, h), stack, h.isInPositionVs(v), childKey = SpotKey.of(Scenario.VS_4BET, h, v))
-                SpotNodes(call, RaiseNode(pot, h.blindBb, y, listOf(opp), 2))
+                    vm.fourBettorVsJam(v, h), stack, h.isInPositionVs(v), childKey = SpotKey.of(Scenario.VS_4BET, h, v),
+                    main = true)
+                SpotNodes(call, RaiseNode(pot, h.blindBb, y, cold + opp, 2))
             }
             Scenario.VS_3BET -> {
                 val x = sz.open(h)
@@ -128,6 +140,23 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
             }
             Scenario.VS_SQUEEZE_OPENER -> facingSqueeze(h, opener = h, caller = key.caller!!, squeezer = v)
             Scenario.VS_SQUEEZE_CALLER -> facingSqueeze(h, opener = key.caller!!, caller = h, squeezer = v)
+            Scenario.VS_3BET_COLD -> {
+                val opener = key.caller!!
+                val o = sz.open(opener)
+                val y = sz.threeBet(opener, v)
+                val pot = o + y + blinds - opener.blindBb - v.blindBb
+                val openerResp = vm.openerVs3Bet(opener, v)
+                val call = CallNode(
+                    pot, h.blindBb, y, listOf(vm.defenseVsOpen(v, opener).raise), h.isInPositionVs(v),
+                    squeezeRisk = openerResp.raiseShare, potLevel = 2, overcallBehind = openerResp.callShare,
+                )
+                val z = sz.coldFourBet(y)
+                val opps = listOf(
+                    Opponent(opener, vm.openerVsCold4Bet(opener, v), o, stack, null, stack, h.isInPositionVs(opener)),
+                    Opponent(v, vm.threeBettorVs4Bet(v, opener), y, stack, null, stack, h.isInPositionVs(v), main = true),
+                )
+                SpotNodes(call, RaiseNode(pot, h.blindBb, z, opps, 3))
+            }
             Scenario.VS_5BET -> {
                 val y = sz.threeBet(h, v)
                 val z = sz.fourBet(y)

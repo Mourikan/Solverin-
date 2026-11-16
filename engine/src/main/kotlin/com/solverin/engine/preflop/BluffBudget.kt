@@ -11,6 +11,7 @@ import kotlin.math.pow
  * Profile fold rates are measured vs normal-width ranges; this keeps the raising range
  * polarized at a defensible value:bluff ratio, scaled up vs over-folders and down vs stations.
  * Bluffs compete for the budget by EV surplus over their best alternative (blockers included via FE).
+ * Max-EV override: hands flagged [exempt] (real blocker + large EV, see StakePolicy) are outside the cap.
  */
 object BluffBudget {
 
@@ -22,6 +23,7 @@ object BluffBudget {
         Scenario.VS_4BET -> 0.25
         Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> 0.6
         Scenario.VS_5BET -> 0.0
+        Scenario.VS_3BET_COLD -> 0.5
     }
 
     /** Equilibrium-reference fold rate of the first opponent at each node. */
@@ -33,6 +35,7 @@ object BluffBudget {
         Scenario.VS_4BET -> 0.35
         Scenario.VS_SQUEEZE_OPENER, Scenario.VS_SQUEEZE_CALLER -> 0.50
         Scenario.VS_5BET -> 1.0
+        Scenario.VS_3BET_COLD -> 0.50
     }
 
     /**
@@ -58,14 +61,15 @@ object BluffBudget {
      */
     fun apply(
         ratio: Double, raise: FloatArray, call: FloatArray, valueEq: FloatArray,
-        surplus: DoubleArray, fallbackCall: FloatArray,
+        surplus: DoubleArray, fallbackCall: FloatArray, exempt: BooleanArray? = null,
     ) {
         if (ratio.isInfinite()) return
         var value = 0.0
         val bluffs = ArrayList<Int>()
         for (h in 0 until HandClass.COUNT) {
             if (raise[h] <= 0f) continue
-            if (valueEq[h] >= 0.5f) value += raise[h] * HandClass.combos(h) else bluffs += h
+            if (valueEq[h] >= 0.5f) value += raise[h] * HandClass.combos(h)
+            else if (exempt == null || !exempt[h]) bluffs += h
         }
         var budget = value * ratio
         bluffs.sortByDescending { surplus[it] }

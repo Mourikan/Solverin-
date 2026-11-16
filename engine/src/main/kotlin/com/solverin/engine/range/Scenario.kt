@@ -1,7 +1,7 @@
 package com.solverin.engine.range
 
 /**
- * Preflop decision nodes (3 bits in [SpotKey]).
+ * Preflop decision nodes (4 bits in [SpotKey]; append only, ordinals are persisted).
  * raise = the aggressive option at the node.
  */
 enum class Scenario {
@@ -20,7 +20,9 @@ enum class Scenario {
     /** Cold caller facing a squeeze (opener folded). villain = squeezer, caller = opener. raise = 4bet. */
     VS_SQUEEZE_CALLER,
     /** Opener who 4bet facing a 5bet jam. villain = 3bettor. call / fold only. */
-    VS_5BET;
+    VS_5BET,
+    /** Facing open + 3bet, hero not yet in: villain = 3bettor, caller = opener (acts behind hero). raise = cold 4bet, call = cold call. */
+    VS_3BET_COLD;
 
     companion object {
         private val VALUES = entries.toTypedArray()
