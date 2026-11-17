@@ -62,4 +62,32 @@ object FlopBluffCap {
         }
         return capped
     }
+
+    /**
+     * Total aggressive-frequency cap (hero-range share): trims the raises with the smallest EV gain over their
+     * best non-aggressive option until the range raises at most [maxFrequency]; marks trimmed combos in [capped].
+     */
+    fun capTotal(
+        heroIdx: List<Int>, weights: FloatArray, maxFrequency: Double,
+        agg: FloatArray, passive: FloatArray, fold: FloatArray?, capped: BooleanArray,
+        aggEv: (Int) -> Double, passiveEv: (Int) -> Double, foldAllowed: (Int) -> Boolean,
+    ) {
+        var total = 0.0; var raised = 0.0
+        for (h in heroIdx) { total += weights[h]; raised += weights[h] * agg[h] }
+        if (total <= 0.0 || raised <= maxFrequency * total) return
+        var excess = raised - maxFrequency * total
+        fun alt(h: Int) = maxOf(if (fold != null && foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY, passiveEv(h))
+        val order = heroIdx.filter { agg[it] > 0f }.sortedBy { aggEv(it) - alt(it) }
+        for (h in order) {
+            if (excess <= 1e-12) break
+            val w = agg[h].toDouble() * weights[h]
+            val cut = minOf(w, excess)
+            val removed = minOf(agg[h], (cut / weights[h]).toFloat())
+            agg[h] -= removed
+            excess -= cut
+            capped[h] = true
+            val toPassive = fold == null || !foldAllowed(h) || passiveEv(h) >= 0.0
+            if (toPassive) passive[h] += removed else fold!![h] += removed
+        }
+    }
 }

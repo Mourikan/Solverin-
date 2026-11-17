@@ -32,6 +32,19 @@ class FlopMathEngine(
         val texture = Textures.of(flopId)
         val strength = BoardStrength(spot.board)
         val outs = IntArray(Combos.COUNT) { if (Combos.isLive(it, dead)) Draws.outs(spot.board, it) else 0 }
+        /** Unpaired hands with two overcards or a backdoor flush draw (3 to a flush with a hole card). */
+        val backdoor = BooleanArray(Combos.COUNT) { k ->
+            if (!Combos.isLive(k, dead)) return@BooleanArray false
+            val top = spot.board.maxOf { it ushr 2 }
+            val c1 = Combos.C1[k]; val c2 = Combos.C2[k]
+            val over = (c1 ushr 2) > top && (c2 ushr 2) > top
+            var bdfd = false
+            for (suit in 0 until 4) {
+                val hole = (if ((c1 and 3) == suit) 1 else 0) + (if ((c2 and 3) == suit) 1 else 0)
+                if (hole > 0 && hole + spot.board.count { (it and 3) == suit } == 3) bdfd = true
+            }
+            over || bdfd
+        }
     }
 
     private val s = shared ?: Shared(spot)
@@ -44,6 +57,7 @@ class FlopMathEngine(
     val texture get() = s.texture
     val strength get() = s.strength
     val outs get() = s.outs
+    val backdoor get() = s.backdoor
 
     private val eqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
     private val payoffCache = IdentityHashMap<FloatArray, Double>()
@@ -81,10 +95,15 @@ class FlopMathEngine(
     private val byBluff = villainLive.sortedWith(
         compareByDescending<Int> { outs[it] }.thenBy { villainVsHero.equity(it).let { e -> if (e.isNaN()) 1f else e } }
     ).toIntArray()
+    private val byWeakMade = villainLive.sortedWith(
+        compareByDescending<Int> { if (strength.category[it] >= 1 && !strength.inTop(it, p.strongFraction)) 1 else 0 }
+            .thenBy { villainVsHero.equity(it).let { e -> if (e.isNaN()) 1f else e } }
+    ).toIntArray()
 
     val villainModel = FlopVillainModel(
         byStrength, byBluff, ctx.profile, ctx.locks,
         FlopVillainModel.textureFactor(rangeAdvantage, nutAdvantage, texture.volatility),
+        byWeakMade, p.minBetRatio,
     )
 
     val donkRead: DonkRead? = if (spot.isDonk || (spot.nodeType == FlopNodeType.VS_CHECK && spot.villainBetNode == FlopVillainNode.DONK))
@@ -103,13 +122,17 @@ class FlopMathEngine(
         if (t > 0) d / t else 0.0
     }
 
-    /** How much hero's hand loses to villain's outs: nuts 0, strong 0.5, vulnerable made hand 1, draws 0.2, air 0.5. */
+    /**
+     * How much hero's hand loses to villain's outs: nuts 0, strong 0.5, vulnerable made hand 1, draws 0.2;
+     * unpaired: overcards / backdoor equity IP backdoorVulnerabilityIp, otherwise airVulnerability.
+     */
     fun vulnerability(h: Int): Double = when {
         isNut(h) -> 0.0
         isStrong(h) -> 0.5
         outs[h] > 0 -> 0.2
         strength.category[h] >= 1 -> 1.0
-        else -> 0.5
+        spot.heroInPosition && backdoor[h] -> p.backdoorVulnerabilityIp
+        else -> p.airVulnerability
     }
 
     /** R_post(SPR, Pos) penalized by villain's outs vs hero's vulnerability. */
@@ -156,7 +179,16 @@ class FlopMathEngine(
         return Branch(eqR * pot - invest - rk + imp, e, r.toFloat(), pot, invest, rk, imp, false)
     }
 
-    fun raiseTo(previousTotal: Double): Double = minOf(stack, p.raiseMultiplier * previousTotal)
+    /**
+     * Raise size over a street total [previousTotal] with [potWithBet] in the middle (bet included):
+     * multiplier × bet, or pot-weighted (prev + raisePotFraction × (potWithBet + prev)) over a min-bet.
+     */
+    fun raiseTo(previousTotal: Double, potWithBet: Double): Double {
+        val base = p.raiseMultiplier * previousTotal
+        val potBeforeBet = potWithBet - previousTotal
+        val weighted = if (isMinBet(previousTotal, potBeforeBet)) previousTotal + p.raisePotFraction * (potWithBet + previousTotal) else 0.0
+        return minOf(stack, maxOf(base, weighted))
+    }
 
     /**
      * Hero bets / raises to street total [raiseTo]. [potBefore] includes everything already in the pot
@@ -183,7 +215,7 @@ class FlopMathEngine(
     }
 
     private fun vsReraise(h: Int, potAfterHero: Double, x: Double, vInv: Double, a: Double, raiseRange: FloatArray, level: Int): Double {
-        val y = raiseTo(x)
+        val y = raiseTo(x, potAfterHero)
         val potR = potAfterHero + (y - vInv)
         val toCall = y - x
         val callEv = called(h, raiseRange, potR + toCall, toCall, stack - y, aggressor = false).value
@@ -212,7 +244,7 @@ class FlopMathEngine(
 
     /** Hero raises a bet of [bet] (villain's street total). */
     fun raiseVsBet(h: Int, potBefore: Double, bet: Double, betRange: FloatArray): FlopEvTerms =
-        aggressive(h, potBefore, raiseTo(bet), 0.0, bet, villainModel.respondToRaise(betRange), level = 2)
+        aggressive(h, potBefore, raiseTo(bet, potBefore), 0.0, bet, villainModel.respondToRaise(betRange), level = 2)
 
     /**
      * Hero checks with [pot]: villain then bets with his [villainFirstAction] range (prob with card removal)

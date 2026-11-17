@@ -47,15 +47,17 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
          */
         fun splitFirstAction(
             prior: FloatArray, betFrac: Double, valueShare: Double, byStrength: IntArray, byBluff: IntArray,
-            tierMultiplier: Double = 2.0,
+            tierMultiplier: Double = 2.0, altBluff: IntArray? = null, altBluffShare: Double = 0.0,
         ): ComboPartition {
             val rem = prior.copyOf()
             val bet = FloatArray(Combos.COUNT)
             val total = Combos.total(prior)
             val f = betFrac.coerceIn(0.0, 1.0)
             val vs = valueShare.coerceIn(0.0, 1.0)
+            val alt = if (altBluff != null) altBluffShare.coerceIn(0.0, 1.0) else 0.0
             proportional(rem, bet, total * f * vs, byStrength, tierMultiplier)
-            proportional(rem, bet, total * f * (1 - vs), byBluff, tierMultiplier)
+            if (altBluff != null && alt > 0.0) proportional(rem, bet, total * f * (1 - vs) * alt, altBluff, tierMultiplier)
+            proportional(rem, bet, total * f * (1 - vs) * (1 - alt), byBluff, tierMultiplier)
             return ComboPartition(bet, FloatArray(Combos.COUNT), rem)
         }
 

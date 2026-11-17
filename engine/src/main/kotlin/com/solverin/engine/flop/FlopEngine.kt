@@ -113,14 +113,24 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)
-        val ratio = FlopBluffCap.ratio(true, (m.raiseTo(bet) - bet) / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
-            m.villainModel.mdf(potBefore, m.raiseTo(bet) - bet), locked = ctx.locks[FlopVillainNode.VS_RAISE]?.fold != null)
+        val raiseSize = m.raiseTo(bet, potBefore) - bet
+        val ratio = FlopBluffCap.ratio(true, raiseSize / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
+            m.villainModel.mdf(potBefore, raiseSize), locked = ctx.locks[FlopVillainNode.VS_RAISE]?.fold != null)
         val capped = FlopBluffCap.apply(
             heroIdx, m.hero, ratio, fRaise, fCall, fFold,
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
             foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
         )
+        if (!spot.heroInPosition) {
+            val connected = m.texture.connectivity == Connectivity.HIGH || m.texture.volatility >= p.connectedVolatility
+            FlopBluffCap.capTotal(
+                heroIdx, m.hero, if (connected) p.checkRaiseCapConnected else p.checkRaiseCap,
+                fRaise, fCall, fFold, capped,
+                aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
+                foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+            )
+        }
         return FlopAnalysis(
             spot, m.flopId, m.texture, FlopNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage,
             m.heroVsVillain.rangeEquity(m.hero), null, null,

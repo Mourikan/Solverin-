@@ -21,6 +21,10 @@ data class FlopProfile(
     val betSizeFraction: Double = 0.5,
     /** Preflop aggressor facing a donk bet: fold frequency at the half-pot reference size. */
     val foldToDonk: Double = 0.38,
+    /** Weakness-read donks: share of the non-value part made of weak made hands (rest: draws / semi-bluffs). */
+    val weakDonkMadeShare: Double = 0.7,
+    /** Max fold frequency vs a min-bet (< minBetRatio × pot): pools almost never fold to tiny bets. */
+    val microBetMaxFold: Double = 0.10,
 ) {
     companion object {
         fun population(stake: Stake): FlopProfile = when (stake) {

@@ -14,6 +14,10 @@ class FlopVillainModel(
     private val profile: FlopProfile,
     private val locks: FlopNodeLocks,
     private val textureFactor: Double = 1.0,
+    /** Weak made hands first (ascending equity), used as the non-value part of a weakness / block-bet donk. */
+    private val byWeakMade: IntArray = byBluff,
+    /** Bets below this pot fraction are min-bets (fold capped at profile.microBetMaxFold). */
+    private val microBetRatio: Double = 0.2,
 ) {
     private val memo = java.util.IdentityHashMap<FloatArray, HashMap<Pair<Int, Double>, ComboPartition>>()
 
@@ -27,7 +31,9 @@ class FlopVillainModel(
         val l = locks[node]
         val fold = if (node == FlopVillainNode.VS_DONK) profile.foldToDonk else profile.foldToBet
         val tm = (1 - fold) / mdf(1.0, 0.5)
-        return l?.fold?.let { 1 - it } ?: (mdf(potBefore, bet) * tm * textureFactor).coerceIn(0.02, 0.98)
+        l?.fold?.let { return 1 - it }
+        val cont = (mdf(potBefore, bet) * tm * textureFactor).coerceIn(0.02, 0.98)
+        return if (bet < microBetRatio * potBefore) maxOf(cont, 1 - profile.microBetMaxFold) else cont
     }
 
     /** Villain facing a bet (or a donk lead when [node] = VS_DONK) of [bet] into [potBefore] with range [range]. */
@@ -64,7 +70,11 @@ class FlopVillainModel(
                 else -> throw IllegalArgumentException("$node is not a first action")
             }
             val vs = l?.valueShare ?: valueShareOverride ?: profile.betValueShare
-            ComboPartition.splitFirstAction(range, freq, vs, byStrength, byBluff)
+            // A weakness donk mixes block / protection bets (weak made hands) with semi-bluffs (draws).
+            if (node == FlopVillainNode.DONK && vs < 0.5) {
+                ComboPartition.splitFirstAction(range, freq, vs, byStrength, byBluff,
+                    altBluff = byWeakMade, altBluffShare = profile.weakDonkMadeShare)
+            } else ComboPartition.splitFirstAction(range, freq, vs, byStrength, byBluff)
         }
 
     companion object {

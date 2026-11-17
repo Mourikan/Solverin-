@@ -30,10 +30,13 @@ object FlopInvariants {
                 // A re-raised hand can always fold: its continuation never loses more than its own bet.
                 if (t.pRaise > 0 && (act == FlopAction.BET || act == FlopAction.RAISE || act == FlopAction.DONK))
                     assertTrue(t.evVsRaise >= -t.investment - 1e-9, "$name $act vs re-raise ${t.evVsRaise} < -${t.investment}")
+                // No action invests more than the effective stack.
+                assertTrue(t.investment <= a.spot.effectiveStackBb + 1e-9, "$name $act invests ${t.investment} > stack")
                 // Commitment: an all-in branch realizes raw equity.
                 if (t.allIn) assertEquals(1f, t.realization, 1e-6f, "$name $act all-in realization")
             }
             maxEv(a, k, name)
+            a.betSizeBb?.let { assertTrue(it <= a.spot.effectiveStackBb + 1e-9 && it > 0.0, "bet size $it") }
             if (a.minBet) {
                 val call = a.terms(FlopAction.CALL, k)!!
                 if (call.equity >= a.potOdds!!) assertEquals(0f, a.frequency(FlopAction.FOLD, k), "$name folds a min-bet with pot odds")
