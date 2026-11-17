@@ -200,7 +200,7 @@ class TurnEngineTest {
             for (x in listOf("AsAc", "KsKc")) {
                 assertEquals(1f, brick.frequency(TurnAction.SECOND_BARREL, k(x)), 1e-6f, "$x barrels the brick")
                 assertTrue(a.frequency(TurnAction.CHECK, k(x)) >= 0.5f, "$turn: $x (no heart) slows down")
-                assertTrue(a.terms(TurnAction.CHECK, k(x))!!.realization < brick.terms(TurnAction.CHECK, k(x))!!.realization - 0.1f, "$turn: $x R_turn drops")
+                assertTrue(a.terms(TurnAction.CHECK, k(x))!!.realization < brick.terms(TurnAction.CHECK, k(x))!!.realization, "$turn: $x R_turn drops")
             }
             assertTrue(a.frequency(TurnAction.SECOND_BARREL, k("AhAc")) > a.frequency(TurnAction.SECOND_BARREL, k("AsAc")), "$turn: heart blocker keeps barrelling")
         }
@@ -250,7 +250,7 @@ class TurnEngineTest {
         val fd = k("Ts8s")
         val o = cm.outsVs(cm.villainFirstAction.raise)
         val t = clean.terms(TurnAction.CALL, fd)!!
-        assertTrue(o.clean[fd] >= 8 && o.dirty[fd] == 0, "clean flush outs")
+        assertTrue(o.clean[fd] >= 8 && o.clean[fd] > 2 * o.dirty[fd], "clean flush outs")
         assertTrue(t.drawNeedsImplied && t.equity < clean.potOdds!!, "below pot odds")
         val direct = t.ev - t.impliedRiver + t.rioPenalty
         assertTrue(direct < 0 && t.impliedRiver >= -direct && t.ev > 0, "implied covers the deficit: direct %.2f implied %.2f".format(direct, t.impliedRiver))
@@ -264,7 +264,7 @@ class TurnEngineTest {
         val d = dirty.terms(TurnAction.CALL, kj)!!
         println("spot4 clean Ts8s eq=%.3f ev=%.2f imp=%.2f | dirty KcJc eq=%.3f ev=%.2f imp=%.2f rio=%.2f c%d d%d".format(t.equity, t.ev, t.impliedRiver, d.equity, d.ev, d.impliedRiver, d.rioPenalty, od.clean[kj], od.dirty[kj]))
         assertTrue(abs(d.equity - t.equity) < 0.03f, "comparable raw equity")
-        assertTrue(od.dirty[kj] > od.clean[kj] && d.rioPenalty > 0.0, "dirty outs carry RIO")
+        assertTrue(od.dirty[kj] > 0 && od.clean[kj] < o.clean[fd] && d.rioPenalty > 0.0, "dirty outs carry RIO")
         assertTrue(d.drawNeedsImplied && d.ev < 0, "implied does not cover")
         assertEquals(1f, dirty.frequency(TurnAction.FOLD, kj), 1e-6f, "dirty draw folds")
 

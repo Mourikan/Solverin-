@@ -20,10 +20,10 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
     }
 
     val matrix: TurnEquityMatrix by lazy {
-        TurnEquityMatrix(spot.board, shared.hero, shared.villain, policy.outThreshold, policy.cleanOutThreshold)
+        TurnEquityMatrix(spot.board, shared.hero, shared.villain, policy)
     }
     val extraMatrix: TurnEquityMatrix? by lazy {
-        shared.extra?.let { TurnEquityMatrix(spot.board, shared.hero, it, policy.outThreshold, policy.cleanOutThreshold) }
+        shared.extra?.let { TurnEquityMatrix(spot.board, shared.hero, it, policy) }
     }
 
     fun math(ctx: TurnContext) = TurnMathEngine(spot, ctx, matrix, shared, extraMatrix)
@@ -120,7 +120,9 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             val r = if (bet < spot.effectiveStackBb) m.raiseVsBet(h, potBefore, bet, betRange) else null
             call[h] = c; raise[h] = r
             val foldAllowed = !(minBet && c.equity >= potOdds)
-            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, c.ev, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
+            // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
+            val callEv = if (c.drawNeedsImplied && c.ev <= 0.0 && foldAllowed) Double.NEGATIVE_INFINITY else c.ev
+            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, callEv, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)

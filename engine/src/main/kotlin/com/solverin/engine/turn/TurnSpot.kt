@@ -167,18 +167,29 @@ data class TurnPolicy(
     val posOop: Double = 0.92,
     val initiativeAggressor: Double = 1.02,
     val initiativeCaller: Double = 0.98,
-    /** LeverageFactor = 1 + leverageK · ΔNuts_turn · min(1, SPR / 2), clamped to [0.85, 1.15]. */
-    val leverageK: Double = 0.5,
     /** f(SPR) = villainOutsWeight · min(1, SPR / 2): weight of villain clean outs in R_turn. */
     val villainOutsWeight: Double = 0.5,
     val lowSpr: Double = 1.0,
-    val extractIp: Double = 0.7,
-    val extractOop: Double = 0.45,
-    /** RIO: dirty outs cost min(behind, pot × rioK) on the river. */
-    val rioK: Double = 0.6,
-    /** Outs thresholds on river win share vs villain's range. */
-    val outThreshold: Double = 0.6,
-    val cleanOutThreshold: Double = 0.85,
+    /** LeverageFactor α_pos (IP / OOP); the factor is clamped to [1, maxLeverage]. */
+    val leverageAlphaIp: Double = 1.0,
+    val leverageAlphaOop: Double = 0.7,
+    val maxLeverage: Double = 1.25,
+    /** Clean out: EQ_turn < 0.5 and EQ_river ≥ cleanRiverEquity. */
+    val cleanRiverEquity: Double = 0.80,
+    /** Dirty out: hero improves category, dirtyLow ≤ EQ_river < dirtyHigh, villain improved-and-ahead share ≥ dirtyNutShare. */
+    val dirtyLow: Double = 0.35,
+    val dirtyHigh: Double = 0.70,
+    val dirtyNutShare: Double = 0.15,
+    /** Villain clean out (hero ahead on the turn): EQ_river below this. */
+    val villainOutEquity: Double = 0.40,
+    /** River nut threshold for ΔNuts_river and river nut blockers. */
+    val riverNutEquity: Double = 0.85,
+    /** Scare card: ΔNuts_river exceeds the mean over the 46 rivers by at least this. */
+    val scareNutShift: Double = 0.03,
+    /** Sizing_river_opt: hero's river value bet (pot fraction). */
+    val riverValueBet: Double = 0.75,
+    /** P(Payoff | Pos) multiplier OOP (IP = 1). */
+    val payoffOop: Double = 0.8,
     val semiBluffOuts: Int = 8,
     val bluffBaseMin: Double = 0.45,
     val bluffBaseMax: Double = 0.65,

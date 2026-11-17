@@ -14,18 +14,20 @@ import com.solverin.engine.math.RakeModel
 import java.util.IdentityHashMap
 
 /**
- * Master turn EV equation (per hero combo, exact card removal, exact 46-card river iteration):
+ * Master turn EV equation — single judge (per hero combo, exact card removal, exact 46-card river projection):
  *
  *  EV(bet)  = P(fold)·(Pot + Dead) + P(call)·[EQ46·R_turn·PotTotal − Inv − Rake + EV_implied_river − Penalty_RIO]
  *           + P(raise)·EV(ReraiseResponse: fold / call / jam)
  *  EV(call) = EQ46·R_turn·PotTotal − Inv − Rake + EV_implied_river − Penalty_RIO
  *  EV(check)= P(check behind)·[EQ46·R_turn·Pot − Rake + implied − RIO] + P(villain bets)·max(fold, call, raise)
  *
- *  R_turn = PosFactor · Initiative · (1 − Outs_clean_villain / 46 · f(SPR)) · LeverageFactor(SPR, ΔNuts_turn),
- *           f(SPR) = villainOutsWeight · min(1, SPR / 2), LeverageFactor = 1 + leverageK · ΔNuts_turn · min(1, SPR / 2)
- *           clamped to [0.85, 1.15]; SPR → 0 pulls R → 1; all-in R = 1.
- *  EV_implied_river = Σ_clean share / 46 · min(behind, Pot · extract) · riverCallElasticity   (hero behind now)
- *  Penalty_RIO      = Σ_dirty (1 − share) / 46 · min(behind, Pot · rioK)                    (hero behind now)
+ * Coupled sub-equations ([TurnRiverProjectionEngine]):
+ *  EV_implied_river = |O_clean| / 46 · min(Stack_rem, Pot_after_turn · Sizing_river_opt) · P(Payoff | Elasticity, Pos)
+ *  Penalty_RIO      = |O_dirty| / 46 · min(Stack_rem, Pot_after_turn · Sizing_villain_river) · P(HeroTrapped | EQ_river)
+ *  LeverageFactor   = 1 + α_pos · max(0, ΔNuts_turn) · |S_bluff| / 46 · (2 − BlockerFactor_nuts(h)) · tanh(Stack_rem / Pot_after_turn)
+ *  R_turn = PosFactor · Initiative · (1 − Outs_clean_villain / 46 · f(SPR)) · LeverageFactor (aggressor only),
+ *           f(SPR) = villainOutsWeight · min(1, SPR / 2); SPR → 0 pulls R → 1; Stack_rem = 0 ⇒ R = 1, implied = RIO = 0.
+ *  Hero's turn bets: P(fold)_eff = min(1, P(fold) · LeverageFactor), call / raise rescaled (probabilities sum to 1).
  */
 class TurnMathEngine(
     private val spot: TurnSpot,
@@ -64,8 +66,8 @@ class TurnMathEngine(
 
     fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.heroVs(range) }
     fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.getOrPut(range) { extraEquity!!.heroVs(range) }
-    fun outsVs(range: FloatArray): TurnEquityMatrix.Outs = equity.outs(range)
-    private fun outsVsExtra(range: FloatArray): TurnEquityMatrix.Outs = extraEquity!!.outs(range)
+    fun outsVs(range: FloatArray): TurnRiverProjectionEngine.Projection = equity.outs(range)
+    private fun outsVsExtra(range: FloatArray): TurnRiverProjectionEngine.Projection = extraEquity!!.outs(range)
 
     val heroVsVillain: FlopEquity.Result = eqVs(villain)
     private val villainVsHero: FlopEquity.Result = equity.villainVs(hero)
@@ -205,27 +207,39 @@ class TurnMathEngine(
 
     // ---- sub-equations ------------------------------------------------------------------------------
 
-    fun leverage(spr: Double): Double = (1 + p.leverageK * nutAdvantage * minOf(1.0, spr / 2)).coerceIn(0.85, 1.15)
+    /** Sub-equation 3: future-threat leverage of combo [h] with [behind] chips left over a [pot] after the turn action. */
+    fun leverage(h: Int, behind: Double, pot: Double): Double {
+        if (behind <= 0.0 || pot <= 0.0) return 1.0
+        val alpha = if (spot.heroInPosition) p.leverageAlphaIp else p.leverageAlphaOop
+        val l = 1 + alpha * maxOf(0.0, nutAdvantage) * equity.projection.scareShare(h) * (2 - blockerFactor(h)) * Math.tanh(behind / pot)
+        return l.coerceIn(1.0, p.maxLeverage)
+    }
 
-    /** R_turn for hero combo [h] vs a villain range whose outs are [o]. */
-    fun realization(h: Int, o: TurnEquityMatrix.Outs, aggressor: Boolean, spr: Double): Double {
+    /** R_turn for hero combo [h] vs a villain range projected as [o]. */
+    fun realization(h: Int, o: TurnRiverProjectionEngine.Projection, aggressor: Boolean, behind: Double, pot: Double): Double {
+        val spr = behind / pot
         val pos = if (spot.heroInPosition) p.posIp else p.posOop
         val init = if (aggressor) p.initiativeAggressor else p.initiativeCaller
         val f = p.villainOutsWeight * minOf(1.0, spr / 2)
-        val r = pos * init * (1 - o.villainClean[h].toDouble() / TurnEquityMatrix.UNSEEN_RIVERS * f) * leverage(spr)
+        val lev = if (aggressor) leverage(h, behind, pot) else 1.0
+        val r = pos * init * (1 - o.villainClean[h].toDouble() / TurnRiverProjectionEngine.UNSEEN_RIVERS * f) * lev
         val low = ((p.lowSpr - spr) / p.lowSpr).coerceIn(0.0, 1.0)
         return r + (1 - r) * low
     }
 
-    fun implied(h: Int, o: TurnEquityMatrix.Outs, pot: Double, behind: Double): Double {
-        if (behind <= 0.0 || !o.behind(h) || o.clean[h] == 0) return 0.0
-        val ext = minOf(behind, pot * if (spot.heroInPosition) p.extractIp else p.extractOop)
-        return o.cleanWin[h] / TurnEquityMatrix.UNSEEN_RIVERS * ext * riverElasticity
+    /** P(Payoff_V | Elasticity_V, Pos). */
+    val payoffProbability: Double get() = riverElasticity * if (spot.heroInPosition) 1.0 else p.payoffOop
+
+    /** Sub-equation 2a: EV_implied_river. */
+    fun implied(h: Int, o: TurnRiverProjectionEngine.Projection, pot: Double, behind: Double): Double {
+        if (behind <= 0.0 || o.clean[h] == 0) return 0.0
+        return o.clean[h].toDouble() / TurnRiverProjectionEngine.UNSEEN_RIVERS * minOf(behind, pot * p.riverValueBet) * payoffProbability
     }
 
-    fun rio(h: Int, o: TurnEquityMatrix.Outs, pot: Double, behind: Double): Double {
-        if (behind <= 0.0 || !o.behind(h) || o.dirty[h] == 0) return 0.0
-        return o.dirtyLoss[h] / TurnEquityMatrix.UNSEEN_RIVERS * minOf(behind, pot * p.rioK)
+    /** Sub-equation 2b: Penalty_RIO. */
+    fun rio(h: Int, o: TurnRiverProjectionEngine.Projection, pot: Double, behind: Double): Double {
+        if (behind <= 0.0 || o.dirty[h] == 0) return 0.0
+        return o.dirty[h].toDouble() / TurnRiverProjectionEngine.UNSEEN_RIVERS * minOf(behind, pot * prof.betSizeFraction) * o.trapped[h]
     }
 
     fun isNut(h: Int): Boolean = safe(heroVsVillain.equity(h), 0f) > p.nutEquity
@@ -234,7 +248,8 @@ class TurnMathEngine(
     /** Semi-bluff priority: ≥ semiBluffOuts clean outs vs [range], or blocks villain's nut combos (BF < 1). */
     fun semiBluffPriority(h: Int, range: FloatArray): Boolean {
         val o = outsVs(range)
-        return (o.behind(h) && o.clean[h] >= p.semiBluffOuts) || (nutTotal > 0.0 && blockerFactor(h) < 1.0)
+        return (o.behind(h) && o.clean[h] >= p.semiBluffOuts) || (nutTotal > 0.0 && blockerFactor(h) < 1.0) ||
+            (equity.projection.scare[h] > 0 && leverage(h, stack, spot.potBb) > 1.0)
     }
 
     class Branch(
@@ -260,7 +275,7 @@ class TurnMathEngine(
             val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, potAll, 0.0, e.toDouble())
             return Branch(e * potAll - inv - rk, e, 1f, potAll, inv, rk, 0.0, 0.0, true)
         }
-        var r = realization(h, o, aggressor, behind / pot)
+        var r = realization(h, o, aggressor, behind, pot)
         if (opponents > 1) r *= Math.pow(MULTIWAY_DECAY, (opponents - 1).toDouble())
         val eqR = minOf(e * r, MAX_EQR)
         val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind, eqR)
@@ -293,7 +308,7 @@ class TurnMathEngine(
         if (extraResp != null) return aggressiveMulti(h, potBefore, raiseTo, heroInv, vInv, resp, level, extraResp, xInv)
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
-        val pr0 = resp.probabilities(h)
+        val pr0 = leveraged(h, resp.probabilities(h), level, potBefore + a + (x - vInv), stack - x)
         val pf = pr0[0]
         var pc = pr0[1]; var pr = pr0[2]
         if (x >= stack) { pc += pr; pr = 0.0 }
@@ -309,8 +324,8 @@ class TurnMathEngine(
     ): TurnEvTerms {
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
-        val v = resp.probabilities(h)
-        val w = extraResp.probabilities(h)
+        val v = leveraged(h, resp.probabilities(h), level, potBefore + a + (x - vInv), stack - x)
+        val w = leveraged(h, extraResp.probabilities(h), level, potBefore + a + (x - xInv), stack - x)
         val fv = v[0]; var cv = v[1]; var rv = v[2]
         val fx = w[0]; var cx = w[1]; var rx = w[2]
         if (x >= stack) { cv += rv; rv = 0.0; cx += rx; rx = 0.0 }
@@ -331,6 +346,16 @@ class TurnMathEngine(
             (wV * evV + wX * evX) / pr
         } else 0.0
         return terms(pf, pc, pr, potBefore, bV, calledEv, evR)
+    }
+
+    /** Hero's turn bet (level 1): P(fold) · LeverageFactor, call / raise rescaled so the three still sum to 1. */
+    private fun leveraged(h: Int, pr: DoubleArray, level: Int, potAfter: Double, behind: Double): DoubleArray {
+        if (level != 1) return pr
+        val l = leverage(h, behind, potAfter)
+        if (l <= 1.0 || pr[0] >= 1.0) return pr
+        val f = minOf(1.0, pr[0] * l)
+        val k = (1 - f) / (1 - pr[0])
+        return doubleArrayOf(f, pr[1] * k, pr[2] * k)
     }
 
     /** Hero's decision after a re-raise of hero's street total [x]: fold (−a), call, or (level 1) jam. */
@@ -381,10 +406,11 @@ class TurnMathEngine(
         return terms(0.0, 1.0, 0.0, 0.0, br, br.value, 0.0, needsImplied(h, betRange, br, c, potBefore))
     }
 
+    /** Draw below direct pot odds: EQ46 · R_turn < PotOdds_direct with river outs (call only if implied − RIO covers). */
     private fun needsImplied(h: Int, range: FloatArray, br: Branch, c: Double, potBefore: Double): Boolean {
         if (br.allIn || c <= 0.0) return false
         val o = outsVs(range)
-        return o.behind(h) && o.clean[h] + o.dirty[h] > 0 && br.equity < c / (potBefore + c)
+        return o.behind(h) && o.clean[h] + o.dirty[h] > 0 && br.equity * br.realization < c / (potBefore + c)
     }
 
     /** Sandwich: the third player behind folds (heads-up), calls (3-way) or squeezes (hero gives up the call). */
