@@ -3,6 +3,8 @@ package com.solverin.engine
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.FlopAction
 import com.solverin.engine.flop.FlopAnalysis
+import com.solverin.engine.flop.FlopNodeType
+import com.solverin.engine.flop.FlopPolicy
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -11,6 +13,7 @@ object FlopInvariants {
     private const val BAND = 0.05
 
     fun all(a: FlopAnalysis) {
+        rangeCaps(a)
         for (k in 0 until Combos.COUNT) {
             if (a.heroRange[k] <= 0f) continue
             val name = Combos.name(k)
@@ -42,6 +45,16 @@ object FlopInvariants {
                 if (call.equity >= a.potOdds!!) assertEquals(0f, a.frequency(FlopAction.FOLD, k), "$name folds a min-bet with pot odds")
             }
         }
+    }
+
+    /** Range-level caps: strict MDF vs min-bets, OOP check-raise frequency, no NaN aggregates. */
+    fun rangeCaps(a: FlopAnalysis, policy: FlopPolicy = FlopPolicy()) {
+        for (act in a.actions) assertTrue(a.frequency(act).isFinite(), "$act aggregate frequency")
+        assertTrue(a.rangeEv().isFinite())
+        if (a.minBet) assertTrue(a.frequency(FlopAction.FOLD) <= 1 - a.mdf!! + 1e-6, "min-bet fold ${a.frequency(FlopAction.FOLD)} > 1 - MDF")
+        if (a.nodeType == FlopNodeType.VS_BET && !a.spot.heroInPosition)
+            assertTrue(a.frequency(FlopAction.RAISE) <= maxOf(policy.checkRaiseCap, policy.checkRaiseCapConnected) + 0.005,
+                "OOP raise ${a.frequency(FlopAction.RAISE)} above cap")
     }
 
     /** Actions played are within the mixing band of the best one, except bluffs cut by the range-consistency cap. */

@@ -29,6 +29,11 @@ class FlopEngine(private val stride: Int = FlopEquity.FAST_STRIDE) {
 /** Spot-bound solver state: board data + equity matrix shared by every [analyze] call. */
 class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
     private val shared = FlopMathEngine.Shared(spot)
+
+    init {
+        require(shared.hero.any { it > 0f }) { "Hero range is empty on this board" }
+        require(shared.villain.any { it > 0f }) { "Villain range is empty on this board" }
+    }
     val matrix: FlopEquityMatrix by lazy { FlopEquityMatrix(spot.board, shared.hero, shared.villain, stride) }
 
     fun analyze(ctx: FlopContext): FlopAnalysis {
@@ -49,6 +54,17 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                 val spr = spot.effectiveStackBb / pot
                 val elasticity = BetSizingOptimizer.elasticity({ f -> m.villainModel.continueShare(pot, f * pot, respNode) })
                 val sizes = BetSizingOptimizer.candidates(spr, m.rangeAdvantage, m.nutAdvantage, elasticity, p)
+                if (sizes.isEmpty()) {
+                    // No chips behind: checking is the only action.
+                    val fc = FloatArray(Combos.COUNT); for (h in heroIdx) fc[h] = 1f
+                    return FlopAnalysis(
+                        spot, m.flopId, m.texture, spot.nodeType, m.rangeAdvantage, m.nutAdvantage,
+                        m.heroVsVillain.rangeEquity(m.hero), null, null, mdf = null, potOdds = null, minBet = false,
+                        donkRead = m.donkRead, freq = mapOf(FlopAction.CHECK to fc), terms = mapOf(FlopAction.CHECK to check),
+                        heroRange = m.hero, sizeCandidates = sizes, elasticity = elasticity,
+                        geometricSize = BetSizingOptimizer.geometric(spr, p.streetsToRiver),
+                    )
+                }
                 var best: SizeResult? = null
                 for (size in sizes) {
                     val b = minOf(size * pot, spot.effectiveStackBb)

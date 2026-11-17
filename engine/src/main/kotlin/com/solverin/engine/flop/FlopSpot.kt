@@ -32,9 +32,13 @@ class FlopSpot(
     val facingBetBb: Double = 0.0,
 ) {
     init {
-        require(board.size == 3 && board.toSet().size == 3) { "Invalid flop" }
-        require(heroRange.size == Combos.COUNT && villainRange.size == Combos.COUNT)
-        require(potBb > 0 && effectiveStackBb >= 0 && facingBetBb >= 0)
+        require(board.size == 3 && board.toSet().size == 3 && board.all { it in 0..51 }) { "Invalid flop" }
+        require(heroRange.size == Combos.COUNT && villainRange.size == Combos.COUNT) { "Ranges must have ${Combos.COUNT} combos" }
+        require(heroRange.all { it.isFinite() && it in 0f..1f }) { "Hero combo weights must be finite and in [0, 1]" }
+        require(villainRange.all { it.isFinite() && it in 0f..1f }) { "Villain combo weights must be finite and in [0, 1]" }
+        require(potBb.isFinite() && potBb > 0) { "Pot must be > 0" }
+        require(effectiveStackBb.isFinite() && effectiveStackBb >= 0) { "Stack must be >= 0" }
+        require(facingBetBb.isFinite() && facingBetBb >= 0) { "Facing bet must be >= 0" }
     }
 
     val nodeType: FlopNodeType get() = when {
@@ -77,6 +81,11 @@ data class FlopPolicy(
     val minBetRatio: Double = 0.2,
     /** A call / bet leaving less than commitSpr × pot behind is valued as all-in. */
     val commitSpr: Double = 0.5,
+    /**
+     * Stack-off risk margin: a jam over a re-raise with < 50% equity vs villain's calling range (a stack-off
+     * bluff) is only chosen when it beats hero's best alternative (fold / call) by at least this many bb.
+     */
+    val stackOffBluffMarginBb: Double = 1.0,
     val mixBandBb: Double = 0.05,
     val nutFraction: Double = 0.03,
     /** Equity above which a combo counts as "nuts" for ΔNuts. */

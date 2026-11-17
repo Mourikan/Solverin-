@@ -249,6 +249,7 @@ class FlopMathEngine(
             val ej = eqVs(jr.call).equity(h).let { if (it.isNaN()) 0f else it }.toDouble()
             val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, fin, 0.0, ej)
             jamEv = pr[0] * potR + (pr[1] + pr[2]) * (ej * fin - (stack - x) - rk)
+            if (ej < 0.5 && jamEv < maxOf(0.0, callBranch.value) + p.stackOffBluffMarginBb) jamEv = Double.NEGATIVE_INFINITY
         }
         return ReraiseResponse(y, toCall, callBranch, jamEv, a)
     }
@@ -292,7 +293,13 @@ class FlopMathEngine(
         val pb = villainFirstAction.probabilities(h)[2]
         val betRange = villainFirstAction.raise
         val b = minOf(ctx.profile.betSizeFraction * pot, stack)
-        val best = if (pb > 0) maxOf(0.0, call(h, pot + b, b, betRange).ev, raiseVsBet(h, pot + b, b, betRange).ev) else 0.0
+        val best = if (pb > 0 && b > 0.0) {
+            val cl = call(h, pot + b, b, betRange)
+            val rs = if (b < stack) raiseVsBet(h, pot + b, b, betRange).ev else Double.NEGATIVE_INFINITY
+            // Min-bet rule inside the check subtree: with pot-odds equity a fold is not an option.
+            val foldEv = if (isMinBet(b, pot) && cl.equity >= b / (pot + 2 * b)) Double.NEGATIVE_INFINITY else 0.0
+            maxOf(foldEv, cl.ev, rs)
+        } else 0.0
         return FlopEvTerms(
             pFold = 0.0, pCall = 1 - pb, pRaise = pb, foldWin = 0.0,
             equity = through.equity, realization = through.realization, potTotal = through.potTotal, investment = 0.0,
