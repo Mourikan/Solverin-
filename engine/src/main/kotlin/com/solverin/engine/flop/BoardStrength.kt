@@ -3,7 +3,7 @@ package com.solverin.engine.flop
 import com.solverin.engine.eval.HandEvaluator
 
 /**
- * Made-hand strength of every live combo on the flop (5-card evaluation) and its percentile among all
+ * Made-hand strength of every live combo on the board (flop / turn / river) and its percentile among all
  * live combos (1.0 = best). Nut / strong tiers drive ΔNuts, implied-odds payoff and vulnerability.
  */
 class BoardStrength(board: IntArray) {
@@ -12,14 +12,16 @@ class BoardStrength(board: IntArray) {
     val category = IntArray(Combos.COUNT)
 
     init {
+        require(board.size in 3..5) { "Board must have 3..5 cards" }
         val dead = Combos.mask(board)
         val ev = HandEvaluator()
-        val cards = intArrayOf(board[0], board[1], board[2], 0, 0)
+        val n = board.size
+        val cards = IntArray(n + 2).also { board.copyInto(it) }
         val live = ArrayList<Int>(Combos.COUNT)
         for (k in 0 until Combos.COUNT) {
             if (!Combos.isLive(k, dead)) continue
-            cards[3] = Combos.C1[k]; cards[4] = Combos.C2[k]
-            strength[k] = ev.evaluate(cards, 5)
+            cards[n] = Combos.C1[k]; cards[n + 1] = Combos.C2[k]
+            strength[k] = ev.evaluate(cards, n + 2)
             category[k] = strength[k] ushr 20
             live += k
         }
@@ -50,11 +52,11 @@ class BoardStrength(board: IntArray) {
     }
 }
 
-/** Flop draw outs of a combo (flush draws, open-enders, gutshots; made straights / flushes have 0). */
+/** Draw outs of a combo on a flop / turn board (flush draws, open-enders, gutshots; made straights / flushes have 0). */
 object Draws {
     fun outs(board: IntArray, k: Int): Int {
         val c1 = Combos.C1[k]; val c2 = Combos.C2[k]
-        val all = intArrayOf(board[0], board[1], board[2], c1, c2)
+        val all = board + intArrayOf(c1, c2)
         val suitCount = IntArray(4)
         for (c in all) suitCount[c and 3]++
         var flushOuts = 0

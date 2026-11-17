@@ -1,0 +1,452 @@
+package com.solverin.engine.turn
+
+import com.solverin.engine.flop.BoardStrength
+import com.solverin.engine.flop.ComboPartition
+import com.solverin.engine.flop.Combos
+import com.solverin.engine.flop.Draws
+import com.solverin.engine.flop.FlopEquity
+import com.solverin.engine.flop.FlopNodeLock
+import com.solverin.engine.flop.FlopNodeLocks
+import com.solverin.engine.flop.FlopProfile
+import com.solverin.engine.flop.FlopVillainModel
+import com.solverin.engine.flop.FlopVillainNode
+import com.solverin.engine.math.RakeModel
+import java.util.IdentityHashMap
+
+/**
+ * Master turn EV equation (per hero combo, exact card removal, exact 46-card river iteration):
+ *
+ *  EV(bet)  = P(fold)·(Pot + Dead) + P(call)·[EQ46·R_turn·PotTotal − Inv − Rake + EV_implied_river − Penalty_RIO]
+ *           + P(raise)·EV(ReraiseResponse: fold / call / jam)
+ *  EV(call) = EQ46·R_turn·PotTotal − Inv − Rake + EV_implied_river − Penalty_RIO
+ *  EV(check)= P(check behind)·[EQ46·R_turn·Pot − Rake + implied − RIO] + P(villain bets)·max(fold, call, raise)
+ *
+ *  R_turn = PosFactor · Initiative · (1 − Outs_clean_villain / 46 · f(SPR)) · LeverageFactor(SPR, ΔNuts_turn),
+ *           f(SPR) = villainOutsWeight · min(1, SPR / 2), LeverageFactor = 1 + leverageK · ΔNuts_turn · min(1, SPR / 2)
+ *           clamped to [0.85, 1.15]; SPR → 0 pulls R → 1; all-in R = 1.
+ *  EV_implied_river = Σ_clean share / 46 · min(behind, Pot · extract) · riverCallElasticity   (hero behind now)
+ *  Penalty_RIO      = Σ_dirty (1 − share) / 46 · min(behind, Pot · rioK)                    (hero behind now)
+ */
+class TurnMathEngine(
+    private val spot: TurnSpot,
+    private val ctx: TurnContext,
+    private val equity: TurnEquityMatrix,
+    shared: Shared? = null,
+    private val extraEquity: TurnEquityMatrix? = null,
+) {
+    class Shared(spot: TurnSpot) {
+        private val dead = Combos.mask(spot.board)
+        val hero = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.heroRange[it] else 0f }
+        val villain = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.villainRange[it] else 0f }
+        val extra: FloatArray? = spot.extraRange?.let { x -> FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) x[it] else 0f } }
+        val impact = TurnCardImpactEngine.classify(spot.flop, spot.turnCard)
+        val strength = BoardStrength(spot.board)
+        val drawOuts = IntArray(Combos.COUNT) { if (Combos.isLive(it, dead)) Draws.outs(spot.board, it) else 0 }
+    }
+
+    private val s = shared ?: Shared(spot)
+    private val p = ctx.policy
+    private val stack = spot.effectiveStackBb
+
+    val hero get() = s.hero
+    val villain get() = s.villain
+    val extra: FloatArray? get() = s.extra
+    val impact get() = s.impact
+    val strength get() = s.strength
+    val drawOuts get() = s.drawOuts
+
+    init {
+        require(s.extra == null || extraEquity != null) { "3-way spot needs an extra equity provider" }
+    }
+
+    private val eqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
+    private val extraEqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
+
+    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.heroVs(range) }
+    fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.getOrPut(range) { extraEquity!!.heroVs(range) }
+    fun outsVs(range: FloatArray): TurnEquityMatrix.Outs = equity.outs(range)
+    private fun outsVsExtra(range: FloatArray): TurnEquityMatrix.Outs = extraEquity!!.outs(range)
+
+    val heroVsVillain: FlopEquity.Result = eqVs(villain)
+    private val villainVsHero: FlopEquity.Result = equity.villainVs(hero)
+
+    /** ΔRange_turn = hero range equity (exact over 46 rivers) − 50%. */
+    val rangeAdvantage: Double = heroVsVillain.rangeEquity(hero) - 0.5
+    val heroNutShare: Double = highEquityShare(hero, heroVsVillain, p.nutEquity)
+    val villainNutShare: Double = highEquityShare(villain, villainVsHero, p.nutEquity)
+    /** ΔNuts_turn = hero share of combos with > 85% equity − villain share. */
+    val nutAdvantage: Double = heroNutShare - villainNutShare
+    /** Villain holds (almost) no combos above nutEquity: overbet target. */
+    val villainCapped: Boolean = villainNutShare < p.cappedNutShare
+
+    private fun highEquityShare(range: FloatArray, eq: FlopEquity.Result, threshold: Double): Double {
+        var t = 0.0; var x = 0.0
+        for (k in range.indices) {
+            val w = range[k]
+            if (w <= 0f) continue
+            val e = eq.equity(k)
+            if (e.isNaN()) continue
+            t += w
+            if (e > threshold) x += w
+        }
+        return if (t > 0) x / t else 0.0
+    }
+
+    /** Villain combos with > nutEquity vs hero's range (blocker reference). */
+    val villainNutRange: FloatArray = FloatArray(Combos.COUNT) { k ->
+        val w = villain[k]
+        if (w <= 0f) 0f else villainVsHero.equity(k).let { e -> if (!e.isNaN() && e > p.nutEquity) w else 0f }
+    }
+    private val nutTotal = Combos.total(villainNutRange)
+    private val avgNutUnblocked: Double = run {
+        if (nutTotal <= 0.0) return@run 1.0
+        var n = 0.0; var d = 0.0
+        for (k in hero.indices) { val w = hero[k]; if (w <= 0f) continue; n += w * Combos.remaining(k, villainNutRange, nutTotal); d += w }
+        if (d > 0) n / d / nutTotal else 1.0
+    }
+
+    /** Blocker factor: villain nut combos left given hero's hand / range average (< 1 = hero blocks the nuts). */
+    fun blockerFactor(h: Int): Double =
+        if (nutTotal <= 0.0) 1.0 else Combos.remaining(h, villainNutRange, nutTotal) / nutTotal / avgNutUnblocked
+
+    // ---- villain model (turn profile mapped onto the flop response machinery) ------------------------
+
+    private fun mdf(f: Double) = 1 / (1 + f)
+
+    /** Fold at the 66% reference → fold at the 50% reference used by [FlopVillainModel]. */
+    private fun ref50(fold66: Double) = 1 - ((1 - fold66) * mdf(0.5) / mdf(REF_SIZE)).coerceIn(0.02, 0.98)
+
+    private val prof = ctx.profile
+
+    val responseFold: Double = when (spot.villainResponseNode) {
+        TurnVillainNode.VS_SECOND_BARREL -> prof.foldToSecondBarrel
+        TurnVillainNode.VS_DELAYED_CBET -> prof.foldToDelayedCbet
+        TurnVillainNode.VS_PROBE -> prof.foldToProbe
+        TurnVillainNode.VS_DONK -> prof.foldToDonk
+        else -> prof.foldToBet
+    }
+
+    private val firstFrequency: Double = when (spot.villainBetNode) {
+        TurnVillainNode.BARREL -> prof.barrel
+        TurnVillainNode.DELAYED_CBET -> prof.delayedCbet
+        TurnVillainNode.PROBE -> prof.probe
+        TurnVillainNode.DONK -> prof.donk
+        else -> prof.stab
+    }
+
+    private val flopProfile = FlopProfile(
+        foldToBet = ref50(responseFold), raiseVsBet = prof.raiseVsBet, cbet = firstFrequency, stabVsCheck = firstFrequency,
+        donk = firstFrequency, foldToRaise = prof.foldToRaise, reraiseVsRaise = prof.reraiseVsRaise, callJam = prof.callJam,
+        betValueShare = prof.betValueShare, raiseValueShare = prof.raiseValueShare, betSizeFraction = prof.betSizeFraction,
+        foldToDonk = ref50(responseFold), microBetMaxFold = prof.microBetMaxFold,
+    )
+
+    private fun TurnNodeLock.toFlop() = FlopNodeLock(fold, raise, frequency, valueShare)
+
+    private val flopLocks: FlopNodeLocks = run {
+        var l = FlopNodeLocks.NONE
+        ctx.locks[spot.villainResponseNode]?.let { l = l.with(FlopVillainNode.VS_BET, it.toFlop()).with(FlopVillainNode.VS_DONK, it.toFlop()) }
+        ctx.locks[TurnVillainNode.VS_TURN_RAISE]?.let { l = l.with(FlopVillainNode.VS_RAISE, it.toFlop()) }
+        ctx.locks[TurnVillainNode.VS_JAM]?.let { l = l.with(FlopVillainNode.VS_JAM, it.toFlop()) }
+        ctx.locks[spot.villainBetNode]?.let { l = l.with(FlopVillainNode.STAB, it.toFlop()).with(FlopVillainNode.DONK, it.toFlop()) }
+        l
+    }
+
+    /** True when the user locked villain's fold vs hero's turn bet (a read: bluff cap relaxes to 20×). */
+    val responseFoldLocked: Boolean get() = ctx.locks[spot.villainResponseNode]?.fold != null
+    val raiseFoldLocked: Boolean get() = ctx.locks[TurnVillainNode.VS_TURN_RAISE]?.fold != null
+    /** Locked calling station vs hero's bet: pure bluffs → 0, thin value expands. */
+    val station: Boolean get() = ctx.locks[spot.villainResponseNode]?.fold?.let { it <= p.stationFold } ?: false
+
+    val riverElasticity: Double = ctx.locks[TurnVillainNode.RIVER_ELASTICITY]?.frequency ?: prof.riverCallElasticity
+
+    private val villainLive = (0 until Combos.COUNT).filter { villain[it] > 0f }
+    private fun safe(e: Float, d: Float) = if (e.isNaN()) d else e
+    private val byStrength = villainLive.sortedByDescending { safe(villainVsHero.equity(it), 0f) }.toIntArray()
+    private val byBluff = villainLive.sortedWith(
+        compareByDescending<Int> { drawOuts[it] }.thenBy { safe(villainVsHero.equity(it), 1f) }
+    ).toIntArray()
+    private val byWeakMade = villainLive.sortedWith(
+        compareByDescending<Int> { if (strength.category[it] >= 1 && !strength.inTop(it, p.strongFraction)) 1 else 0 }
+            .thenBy { safe(villainVsHero.equity(it), 1f) }
+    ).toIntArray()
+
+    private val textureFactor = FlopVillainModel.textureFactor(rangeAdvantage, nutAdvantage, FlopVillainModel.VOLATILITY_REF)
+
+    val villainModel = FlopVillainModel(byStrength, byBluff, flopProfile, flopLocks, textureFactor, byWeakMade, p.minBetRatio)
+
+    private val firstNode = if (spot.villainBetNode == TurnVillainNode.DONK) FlopVillainNode.DONK else FlopVillainNode.STAB
+
+    /** Villain's first action at this node (raise = betting range, fold = checking range). */
+    val villainFirstAction: ComboPartition = villainModel.firstAction(villain, firstNode)
+
+    // ---- third player ------------------------------------------------------------------------------
+
+    val extraModel: FlopVillainModel? = s.extra?.let { x ->
+        val xVsHero = extraEquity!!.villainVs(hero)
+        val live = (0 until Combos.COUNT).filter { x[it] > 0f }
+        val so = live.sortedByDescending { safe(xVsHero.equity(it), 0f) }.toIntArray()
+        val bo = live.sortedWith(compareByDescending<Int> { drawOuts[it] }.thenBy { safe(xVsHero.equity(it), 1f) }).toIntArray()
+        FlopVillainModel(so, bo, flopProfile, flopLocks, textureFactor, bo, p.minBetRatio)
+    }
+    val extraFirstAction: ComboPartition? = extraModel?.firstAction(s.extra!!, FlopVillainNode.STAB)
+    val extraActsAfterHero: Boolean get() = s.extra != null && spot.nodeType != TurnNodeType.VS_CHECK
+    val extraNodeRange: FloatArray? = s.extra?.let { if (spot.nodeType == TurnNodeType.VS_CHECK) extraFirstAction!!.fold else it }
+
+    fun fieldEquity(pairwise: List<Float>): Float {
+        if (pairwise.size == 1) return pairwise[0]
+        var heroShare = 1.0
+        for (e in pairwise) heroShare *= e
+        var others = 0.0
+        for (e in pairwise) others += (1 - e) / pairwise.size
+        val t = heroShare + others
+        return if (t <= 0.0) 0f else (heroShare / t).toFloat()
+    }
+
+    // ---- sub-equations ------------------------------------------------------------------------------
+
+    fun leverage(spr: Double): Double = (1 + p.leverageK * nutAdvantage * minOf(1.0, spr / 2)).coerceIn(0.85, 1.15)
+
+    /** R_turn for hero combo [h] vs a villain range whose outs are [o]. */
+    fun realization(h: Int, o: TurnEquityMatrix.Outs, aggressor: Boolean, spr: Double): Double {
+        val pos = if (spot.heroInPosition) p.posIp else p.posOop
+        val init = if (aggressor) p.initiativeAggressor else p.initiativeCaller
+        val f = p.villainOutsWeight * minOf(1.0, spr / 2)
+        val r = pos * init * (1 - o.villainClean[h].toDouble() / TurnEquityMatrix.UNSEEN_RIVERS * f) * leverage(spr)
+        val low = ((p.lowSpr - spr) / p.lowSpr).coerceIn(0.0, 1.0)
+        return r + (1 - r) * low
+    }
+
+    fun implied(h: Int, o: TurnEquityMatrix.Outs, pot: Double, behind: Double): Double {
+        if (behind <= 0.0 || !o.behind(h) || o.clean[h] == 0) return 0.0
+        val ext = minOf(behind, pot * if (spot.heroInPosition) p.extractIp else p.extractOop)
+        return o.cleanWin[h] / TurnEquityMatrix.UNSEEN_RIVERS * ext * riverElasticity
+    }
+
+    fun rio(h: Int, o: TurnEquityMatrix.Outs, pot: Double, behind: Double): Double {
+        if (behind <= 0.0 || !o.behind(h) || o.dirty[h] == 0) return 0.0
+        return o.dirtyLoss[h] / TurnEquityMatrix.UNSEEN_RIVERS * minOf(behind, pot * p.rioK)
+    }
+
+    fun isNut(h: Int): Boolean = safe(heroVsVillain.equity(h), 0f) > p.nutEquity
+    fun isMinBet(bet: Double, potBefore: Double): Boolean = bet <= p.minBetRatio * potBefore || bet <= 1.0
+
+    /** Semi-bluff priority: ≥ semiBluffOuts clean outs vs [range], or blocks villain's nut combos (BF < 1). */
+    fun semiBluffPriority(h: Int, range: FloatArray): Boolean {
+        val o = outsVs(range)
+        return (o.behind(h) && o.clean[h] >= p.semiBluffOuts) || (nutTotal > 0.0 && blockerFactor(h) < 1.0)
+    }
+
+    class Branch(
+        val value: Double, val equity: Float, val realization: Float, val potTotal: Double, val investment: Double,
+        val rake: Double, val implied: Double, val rio: Double, val allIn: Boolean,
+    )
+
+    fun called(h: Int, range: FloatArray, pot: Double, invest: Double, behindAfter: Double, aggressor: Boolean): Branch =
+        calledMulti(h, range, null, pot, invest, behindAfter, aggressor)
+
+    fun calledMulti(h: Int, vRange: FloatArray?, xRange: FloatArray?, pot: Double, invest: Double, behindAfter: Double, aggressor: Boolean): Branch {
+        require(vRange != null || xRange != null)
+        val pair = ArrayList<Float>(2)
+        vRange?.let { pair += safe(eqVs(it).equity(h), 0f) }
+        xRange?.let { pair += safe(eqVsExtra(it).equity(h), 0f) }
+        val e = fieldEquity(pair)
+        val opponents = pair.size
+        val o = if (vRange != null) outsVs(vRange) else outsVsExtra(xRange!!)
+        val behind = behindAfter.coerceAtLeast(0.0)
+        if (behind <= p.commitSpr * pot) {
+            val potAll = pot + behind * (1 + opponents)
+            val inv = invest + behind
+            val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, potAll, 0.0, e.toDouble())
+            return Branch(e * potAll - inv - rk, e, 1f, potAll, inv, rk, 0.0, 0.0, true)
+        }
+        var r = realization(h, o, aggressor, behind / pot)
+        if (opponents > 1) r *= Math.pow(MULTIWAY_DECAY, (opponents - 1).toDouble())
+        val eqR = minOf(e * r, MAX_EQR)
+        val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind, eqR)
+        var imp = implied(h, o, pot, behind)
+        var rio = rio(h, o, pot, behind)
+        if (opponents > 1) { imp *= MULTIWAY_DECAY; rio /= MULTIWAY_DECAY }
+        return Branch(eqR * pot - invest - rk + imp - rio, e, r.toFloat(), pot, invest, rk, imp, rio, false)
+    }
+
+    fun raiseTo(previousTotal: Double, potWithBet: Double): Double {
+        val base = p.raiseMultiplier * previousTotal
+        val potBeforeBet = potWithBet - previousTotal
+        val weighted = if (isMinBet(previousTotal, potBeforeBet)) previousTotal + p.raisePotFraction * (potWithBet + previousTotal) else 0.0
+        return minOf(stack, maxOf(base, weighted))
+    }
+
+    private fun terms(pf: Double, pc: Double, pr: Double, foldWin: Double, br: Branch, calledEv: Double, evR: Double, needsImplied: Boolean = false) =
+        TurnEvTerms(
+            pFold = pf, pCall = pc, pRaise = pr, foldWin = foldWin, equity = br.equity, realization = br.realization,
+            potTotal = br.potTotal, investment = br.investment, rake = br.rake, impliedRiver = br.implied, rioPenalty = br.rio,
+            evVsRaise = evR, calledEv = calledEv, allIn = br.allIn, ev = pf * foldWin + pc * calledEv + pr * evR,
+            drawNeedsImplied = needsImplied,
+        )
+
+    /** Hero bets / raises to street total [raiseTo] (level 1 = bet: may jam over a raise; level 2 = raise). */
+    fun aggressive(
+        h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int,
+        extraResp: ComboPartition? = null, xInv: Double = 0.0,
+    ): TurnEvTerms {
+        if (extraResp != null) return aggressiveMulti(h, potBefore, raiseTo, heroInv, vInv, resp, level, extraResp, xInv)
+        val x = minOf(raiseTo, stack)
+        val a = x - heroInv
+        val pr0 = resp.probabilities(h)
+        val pf = pr0[0]
+        var pc = pr0[1]; var pr = pr0[2]
+        if (x >= stack) { pc += pr; pr = 0.0 }
+        val callRange = if (x >= stack) resp.continueRange else resp.call
+        val br = called(h, callRange, potBefore + a + (x - vInv), a, stack - x, aggressor = true)
+        val evR = if (pr > 0) reraiseResponse(h, potBefore + a, x, vInv, a, resp.raise, level).value else 0.0
+        return terms(pf, pc, pr, potBefore, br, br.value, evR)
+    }
+
+    private fun aggressiveMulti(
+        h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int,
+        extraResp: ComboPartition, xInv: Double,
+    ): TurnEvTerms {
+        val x = minOf(raiseTo, stack)
+        val a = x - heroInv
+        val v = resp.probabilities(h)
+        val w = extraResp.probabilities(h)
+        val fv = v[0]; var cv = v[1]; var rv = v[2]
+        val fx = w[0]; var cx = w[1]; var rx = w[2]
+        if (x >= stack) { cv += rv; rv = 0.0; cx += rx; rx = 0.0 }
+        val pf = fv * fx
+        val pr = 1 - (1 - rv) * (1 - rx)
+        val onlyV = cv * fx; val onlyX = fv * cx; val both = cv * cx
+        val pc = onlyV + onlyX + both
+        val callV = if (x >= stack) resp.continueRange else resp.call
+        val callX = if (x >= stack) extraResp.continueRange else extraResp.call
+        val bV = calledMulti(h, callV, null, potBefore + a + (x - vInv), a, stack - x, aggressor = true)
+        val bX = calledMulti(h, null, callX, potBefore + a + (x - xInv), a, stack - x, aggressor = true)
+        val bB = calledMulti(h, callV, callX, potBefore + a + (x - vInv) + (x - xInv), a, stack - x, aggressor = true)
+        val calledEv = if (pc > 0) (onlyV * bV.value + onlyX * bX.value + both * bB.value) / pc else 0.0
+        val wV = rv; val wX = (1 - rv) * rx
+        val evR = if (pr > 0) {
+            val evV = if (wV > 0) reraiseResponse(h, potBefore + a, x, vInv, a, resp.raise, level).value else 0.0
+            val evX = if (wX > 0) reraiseResponse(h, potBefore + a, x, xInv, a, extraResp.raise, level, extraModel!!, extra = true).value else 0.0
+            (wV * evV + wX * evX) / pr
+        } else 0.0
+        return terms(pf, pc, pr, potBefore, bV, calledEv, evR)
+    }
+
+    /** Hero's decision after a re-raise of hero's street total [x]: fold (−a), call, or (level 1) jam. */
+    class ReraiseResponse(val reraiseTo: Double, val toCall: Double, val call: Branch, val jamEv: Double, val invested: Double) {
+        val callEv: Double get() = call.value
+        val best: TurnAction get() = when {
+            maxOf(callEv, jamEv) <= 0.0 -> TurnAction.FOLD
+            jamEv > callEv -> TurnAction.RAISE
+            else -> TurnAction.CALL
+        }
+        val stacksOff: Boolean get() = best == TurnAction.RAISE || (best == TurnAction.CALL && call.allIn)
+        val value: Double get() = -invested + maxOf(0.0, callEv, jamEv)
+    }
+
+    fun reraiseResponse(
+        h: Int, potAfterHero: Double, x: Double, vInv: Double, a: Double, raiseRange: FloatArray, level: Int,
+        model: FlopVillainModel = villainModel, extra: Boolean = false,
+    ): ReraiseResponse {
+        val y = raiseTo(x, potAfterHero)
+        val potR = potAfterHero + (y - vInv)
+        val toCall = y - x
+        val callBranch = if (extra) calledMulti(h, null, raiseRange, potR + toCall, toCall, stack - y, aggressor = false)
+        else called(h, raiseRange, potR + toCall, toCall, stack - y, aggressor = false)
+        var jamEv = Double.NEGATIVE_INFINITY
+        if (level == 1 && y < stack) {
+            val jr = model.respondToJam(raiseRange)
+            val pr = jr.probabilities(h)
+            val fin = potR + (stack - x) + (stack - y)
+            val ej = safe((if (extra) eqVsExtra(jr.call) else eqVs(jr.call)).equity(h), 0f).toDouble()
+            val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, fin, 0.0, ej)
+            jamEv = pr[0] * potR + (pr[1] + pr[2]) * (ej * fin - (stack - x) - rk)
+            if (ej < 0.5 && jamEv < maxOf(0.0, callBranch.value) + p.stackOffBluffMarginBb) jamEv = Double.NEGATIVE_INFINITY
+        }
+        return ReraiseResponse(y, toCall, callBranch, jamEv, a)
+    }
+
+    fun reraiseResponse(h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int): ReraiseResponse {
+        val x = minOf(raiseTo, stack)
+        val a = x - heroInv
+        return reraiseResponse(h, potBefore + a, x, vInv, a, resp.raise, level)
+    }
+
+    /** Hero calls a bet: [potBefore] includes the bet; flags draws calling below direct pot odds. */
+    fun call(h: Int, potBefore: Double, toCall: Double, betRange: FloatArray): TurnEvTerms {
+        val c = minOf(toCall, stack)
+        if (extraActsAfterHero && c > 0.0) return callSandwiched(h, potBefore, c, betRange)
+        val br = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
+        return terms(0.0, 1.0, 0.0, 0.0, br, br.value, 0.0, needsImplied(h, betRange, br, c, potBefore))
+    }
+
+    private fun needsImplied(h: Int, range: FloatArray, br: Branch, c: Double, potBefore: Double): Boolean {
+        if (br.allIn || c <= 0.0) return false
+        val o = outsVs(range)
+        return o.behind(h) && o.clean[h] + o.dirty[h] > 0 && br.equity < c / (potBefore + c)
+    }
+
+    /** Sandwich: the third player behind folds (heads-up), calls (3-way) or squeezes (hero gives up the call). */
+    private fun callSandwiched(h: Int, potBefore: Double, c: Double, betRange: FloatArray): TurnEvTerms {
+        val xResp = extraModel!!.respondToBet(extraNodeRange!!, potBefore, c)
+        val xr = xResp.probabilities(h)
+        val hu = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
+        val mw = calledMulti(h, betRange, xResp.call, potBefore + 2 * c, c, stack - c, aggressor = false)
+        val pc = xr[0] + xr[1]
+        val calledEv = if (pc > 0) (xr[0] * hu.value + xr[1] * mw.value) / pc else 0.0
+        return terms(0.0, pc, xr[2], 0.0, hu, calledEv, -c, needsImplied(h, betRange, hu, c, potBefore))
+    }
+
+    fun raiseVsBet(h: Int, potBefore: Double, bet: Double, betRange: FloatArray): TurnEvTerms {
+        val to = raiseTo(bet, potBefore)
+        val xResp = if (extraActsAfterHero) extraModel!!.respondToBet(extraNodeRange!!, potBefore, minOf(to, stack)) else null
+        return aggressive(h, potBefore, to, 0.0, bet, villainModel.respondToRaise(betRange), level = 2, extraResp = xResp)
+    }
+
+    /** Hero checks: villain (if he acts after) bets his first-action range at profile size, else check-through. */
+    fun check(h: Int, pot: Double, villainActsAfter: Boolean): TurnEvTerms {
+        if (extra != null) return checkMulti(h, pot, villainActsAfter)
+        val through = called(h, villainFirstAction.fold, pot, 0.0, stack, aggressor = false)
+        if (!villainActsAfter) return terms(0.0, 1.0, 0.0, 0.0, through, through.value, 0.0)
+        val pb = villainFirstAction.probabilities(h)[2]
+        val betRange = villainFirstAction.raise
+        val b = minOf(prof.betSizeFraction * pot, stack)
+        val best = if (pb > 0 && b > 0.0) {
+            val cl = call(h, pot + b, b, betRange)
+            val rs = if (b < stack) raiseVsBet(h, pot + b, b, betRange).ev else Double.NEGATIVE_INFINITY
+            val foldEv = if (isMinBet(b, pot) && cl.equity >= b / (pot + 2 * b)) Double.NEGATIVE_INFINITY else 0.0
+            maxOf(foldEv, cl.ev, rs)
+        } else 0.0
+        return terms(0.0, 1 - pb, pb, 0.0, through, through.value, best)
+    }
+
+    private fun checkMulti(h: Int, pot: Double, opponentsActAfter: Boolean): TurnEvTerms {
+        val xCheck = if (opponentsActAfter) extraFirstAction!!.fold else extraNodeRange!!
+        val through = calledMulti(h, villainFirstAction.fold, xCheck, pot, 0.0, stack, aggressor = false)
+        if (!opponentsActAfter) return terms(0.0, 1.0, 0.0, 0.0, through, through.value, 0.0)
+        val pv = villainFirstAction.probabilities(h)[2]
+        val px = extraFirstAction!!.probabilities(h)[2]
+        val b = minOf(prof.betSizeFraction * pot, stack)
+        fun minBetFold(eq: Float) = if (isMinBet(b, pot) && eq >= b / (pot + 2 * b)) Double.NEGATIVE_INFINITY else 0.0
+        val bestV = if (pv > 0 && b > 0.0) {
+            val cl = call(h, pot + b, b, villainFirstAction.raise)
+            val rs = if (b < stack) raiseVsBet(h, pot + b, b, villainFirstAction.raise).ev else Double.NEGATIVE_INFINITY
+            maxOf(minBetFold(cl.equity), cl.ev, rs)
+        } else 0.0
+        val bestX = if (px > 0 && b > 0.0) {
+            val cl = calledMulti(h, null, extraFirstAction.raise, pot + 2 * b, b, stack - b, aggressor = false)
+            maxOf(minBetFold(cl.equity), cl.value)
+        } else 0.0
+        val wV = pv; val wX = (1 - pv) * px
+        val pb = wV + wX
+        val best = if (pb > 0) (wV * bestV + wX * bestX) / pb else 0.0
+        return terms(0.0, 1 - pb, pb, 0.0, through, through.value, best)
+    }
+
+    companion object {
+        const val MAX_EQR = 0.98
+        const val MULTIWAY_DECAY = 0.88
+        const val REF_SIZE = 0.66
+    }
+}
