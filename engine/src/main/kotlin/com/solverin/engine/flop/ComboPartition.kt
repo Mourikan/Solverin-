@@ -41,9 +41,9 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
         }
 
         /**
-         * First-action split (villain bets / checks): value bets are taken PROPORTIONALLY across the top tier of
-         * [tierMultiplier] × the value budget (players do not bet every strong hand), bluffs from [byBluff]; the
-         * checking range (fold) therefore keeps part of the strong hands instead of being capped.
+         * First-action split (villain bets / checks): value bets and bluffs are taken PROPORTIONALLY across tiers of
+         * [tierMultiplier] × their budgets (players neither bet every strong hand nor every draw); the checking
+         * range (fold) therefore keeps strong hands and draws instead of being capped / draw-free.
          */
         fun splitFirstAction(
             prior: FloatArray, betFrac: Double, valueShare: Double, byStrength: IntArray, byBluff: IntArray,
@@ -54,18 +54,23 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
             val total = Combos.total(prior)
             val f = betFrac.coerceIn(0.0, 1.0)
             val vs = valueShare.coerceIn(0.0, 1.0)
-            val valueBudget = total * f * vs
-            val tierBudget = minOf(total, valueBudget * tierMultiplier)
+            proportional(rem, bet, total * f * vs, byStrength, tierMultiplier)
+            proportional(rem, bet, total * f * (1 - vs), byBluff, tierMultiplier)
+            return ComboPartition(bet, FloatArray(Combos.COUNT), rem)
+        }
+
+        /** Takes [budget] proportionally from the first [tierMultiplier] × budget of [order]. */
+        private fun proportional(rem: FloatArray, dst: FloatArray, budget: Double, order: IntArray, tierMultiplier: Double) {
+            if (budget <= 0.0) return
             val tier = FloatArray(Combos.COUNT)
-            fill(rem.copyOf(), tier, tierBudget, byStrength)
+            fill(rem.copyOf(), tier, minOf(Combos.total(rem), budget * tierMultiplier), order)
             val tierTotal = Combos.total(tier)
-            val share = if (tierTotal > 0) (valueBudget / tierTotal).coerceAtMost(1.0).toFloat() else 0f
+            if (tierTotal <= 0.0) return
+            val share = (budget / tierTotal).coerceAtMost(1.0).toFloat()
             for (k in 0 until Combos.COUNT) if (tier[k] > 0f) {
                 val take = tier[k] * share
-                bet[k] += take; rem[k] = (rem[k] - take).coerceAtLeast(0f)
+                dst[k] += take; rem[k] = (rem[k] - take).coerceAtLeast(0f)
             }
-            fill(rem, bet, total * f * (1 - vs), byBluff)
-            return ComboPartition(bet, FloatArray(Combos.COUNT), rem)
         }
 
         private fun fill(rem: FloatArray, dst: FloatArray, budget: Double, order: IntArray) {

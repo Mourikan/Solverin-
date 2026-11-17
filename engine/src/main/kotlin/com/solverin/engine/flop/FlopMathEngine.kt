@@ -56,8 +56,25 @@ class FlopMathEngine(
 
     /** ΔRange = hero range equity − 50%. */
     val rangeAdvantage: Double = heroVsVillain.rangeEquity(hero) - 0.5
-    /** ΔNuts = hero nut-tier share − villain nut-tier share. */
-    val nutAdvantage: Double = strength.share(hero, p.nutFraction) - strength.share(villain, p.nutFraction)
+    /** Weighted share of hero's range with equity > nutEquity vs villain's range. */
+    val heroNutShare: Double = highEquityShare(hero, heroVsVillain, p.nutEquity)
+    /** Weighted share of villain's range with equity > nutEquity vs hero's range. */
+    val villainNutShare: Double = highEquityShare(villain, villainVsHero, p.nutEquity)
+    /** ΔNuts = hero share of combos with > 85% equity − villain share (card-removal exact equities). */
+    val nutAdvantage: Double = heroNutShare - villainNutShare
+
+    private fun highEquityShare(range: FloatArray, eq: FlopEquity.Result, threshold: Double): Double {
+        var t = 0.0; var s = 0.0
+        for (k in range.indices) {
+            val w = range[k]
+            if (w <= 0f) continue
+            val e = eq.equity(k)
+            if (e.isNaN()) continue
+            t += w
+            if (e > threshold) s += w
+        }
+        return if (t > 0) s / t else 0.0
+    }
 
     private val villainLive = (0 until Combos.COUNT).filter { villain[it] > 0f }
     private val byStrength = villainLive.sortedByDescending { villainVsHero.equity(it).let { e -> if (e.isNaN()) 0f else e } }.toIntArray()

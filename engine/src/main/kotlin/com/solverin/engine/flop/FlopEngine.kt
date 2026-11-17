@@ -61,7 +61,8 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                         val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, t.ev, p.mixBandBb)
                         fc[h] = mix[1]; fb[h] = mix[2]
                     }
-                    val ratio = FlopBluffCap.ratio(false, b / pot, resp.foldTotal / resp.priorTotal, m.villainModel.mdf(pot, b))
+                    val ratio = FlopBluffCap.ratio(false, b / pot, resp.foldTotal / resp.priorTotal, m.villainModel.mdf(pot, b),
+                        locked = ctx.locks[respNode]?.fold != null)
                     val capped = FlopBluffCap.apply(
                         heroIdx, m.hero, ratio, fb, fc, null,
                         aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
@@ -113,7 +114,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)
         val ratio = FlopBluffCap.ratio(true, (m.raiseTo(bet) - bet) / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
-            m.villainModel.mdf(potBefore, m.raiseTo(bet) - bet))
+            m.villainModel.mdf(potBefore, m.raiseTo(bet) - bet), locked = ctx.locks[FlopVillainNode.VS_RAISE]?.fold != null)
         val capped = FlopBluffCap.apply(
             heroIdx, m.hero, ratio, fRaise, fCall, fFold,
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
@@ -138,7 +139,7 @@ class FlopAnalysis(
     val nodeType: FlopNodeType,
     /** ΔRange: hero range equity − 50%. */
     val rangeAdvantage: Double,
-    /** ΔNuts: hero nut-tier share − villain nut-tier share. */
+    /** ΔNuts: hero share of combos with > 85% equity − villain share. */
     val nutAdvantage: Double,
     val heroEquity: Double,
     /** Chosen bet size (fraction of pot / bb) at check-or-bet nodes. */

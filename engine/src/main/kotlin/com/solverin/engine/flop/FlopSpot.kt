@@ -72,6 +72,8 @@ data class FlopPolicy(
     val commitSpr: Double = 0.5,
     val mixBandBb: Double = 0.05,
     val nutFraction: Double = 0.03,
+    /** Equity above which a combo counts as "nuts" for ΔNuts. */
+    val nutEquity: Double = 0.85,
     val strongFraction: Double = 0.15,
     /** R_post vulnerability: R × (1 − vulnerabilityK · villain draw density · hand vulnerability). */
     val vulnerabilityK: Double = 0.6,

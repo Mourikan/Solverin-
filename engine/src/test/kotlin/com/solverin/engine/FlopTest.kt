@@ -25,29 +25,7 @@ class FlopTest {
         FlopSpot(board(b), if (heroIp) btnOpen else bbFlat, if (heroIp) bbFlat else btnOpen,
             heroInPosition = heroIp, heroIsAggressor = heroIp, potBb = pot, effectiveStackBb = stack, facingBetBb = facingBet)
 
-    private fun identities(a: FlopAnalysis) {
-        for (k in 0 until Combos.COUNT) {
-            if (a.heroRange[k] <= 0f) continue
-            var s = 0f
-            for (act in a.actions) s += a.frequency(act, k)
-            assertEquals(1f, s, 1e-4f, "${Combos.name(k)} frequencies")
-            for (act in a.actions) {
-                val t = a.terms(act, k) ?: continue
-                assertEquals(1.0, t.pFold + t.pCall + t.pRaise, 1e-9, "${Combos.name(k)} $act probabilities")
-                assertEquals(t.pFold * t.foldWin + t.pCall * t.calledEv + t.pRaise * t.evVsRaise, t.ev, 1e-9,
-                    "${Combos.name(k)} $act EV identity")
-            }
-            // Max EV: any action played is within the mixing band of the best available one; the only allowed
-            // deviation is a capped bluff (best action aggressive with < 50% equity vs the calling range).
-            val evs = a.actions.associateWith { a.ev(it, k) }.filterValues { !it.isNaN() }
-            val bestAct = evs.maxByOrNull { it.value }?.key ?: continue
-            val best = evs.getValue(bestAct)
-            val bluffCapped = (bestAct == FlopAction.BET || bestAct == FlopAction.RAISE || bestAct == FlopAction.DONK) && a.capped(k)
-            for ((act, ev) in evs) if (a.frequency(act, k) > 0f)
-                assertTrue(ev >= best - 0.05 - 1e-9 || bluffCapped || (a.minBet && act != FlopAction.FOLD),
-                    "${Combos.name(k)} plays $act below max EV")
-        }
-    }
+    private fun identities(a: FlopAnalysis) = FlopInvariants.all(a)
 
     @Test fun isomorphism() {
         var total = 0

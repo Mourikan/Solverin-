@@ -5,7 +5,8 @@ package com.solverin.engine.flop
  * not in the nut tier) are capped at valueCombos × ratio. Villain's fold rates are measured vs normal
  * frequencies; without the cap any over-folding profile would make every bet / raise profitable.
  *
- *  ratio = base(action, size) × (villainFold / (1 − MDF))², clamped to [0.25, 3]
+ *  ratio = base(action, size) × (villainFold / (1 − MDF))², clamped to [0.25, 3] ([0.25, 20] when the fold
+ *  frequency is node-locked: a user read is trusted for max exploitation)
  *
  * Bluffs compete for the budget by EV surplus over their best non-aggressive option; removed bluffs fall back
  * to that option (check / call, or fold when allowed).
@@ -17,10 +18,14 @@ object FlopBluffCap {
         else -> 1.0
     }
 
-    fun ratio(raise: Boolean, sizeFraction: Double, villainFold: Double, mdf: Double): Double {
+    /** [locked]: villain's fold frequency comes from a user node lock (a read): the cap relaxes to MAX_LOCKED. */
+    fun ratio(raise: Boolean, sizeFraction: Double, villainFold: Double, mdf: Double, locked: Boolean = false): Double {
         val ref = (1 - mdf).coerceAtLeast(0.05)
-        return (base(raise, sizeFraction) * (villainFold / ref).let { it * it }).coerceIn(0.25, 3.0)
+        return (base(raise, sizeFraction) * (villainFold / ref).let { it * it }).coerceIn(0.25, if (locked) MAX_LOCKED else MAX)
     }
+
+    const val MAX = 3.0
+    const val MAX_LOCKED = 20.0
 
     /**
      * [agg] / [passive] / [fold] frequencies are mutated; returns the combos whose aggressive frequency was cut. [aggEv], [passiveEv] per combo; [isValue] per combo;
