@@ -3,6 +3,7 @@ package com.solverin.engine.pipeline
 import com.solverin.engine.flop.BoardStrength
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.FlopAnalysis
+import com.solverin.engine.preflop.IsoRaiseInterceptor
 import com.solverin.engine.preflop.SpotAnalysis
 import com.solverin.engine.river.RiverAnalysis
 import com.solverin.engine.river.RiverContext
@@ -86,6 +87,7 @@ class StreetReport(
     val rakeAccruedBb: Double,
     val latencyNanos: Long,
     val preflop: SpotAnalysis? = null,
+    val iso: IsoRaiseInterceptor.Analysis? = null,
     val flop: FlopAnalysis? = null,
     val turn: TurnAnalysis? = null,
     val turnSession: TurnSession? = null,

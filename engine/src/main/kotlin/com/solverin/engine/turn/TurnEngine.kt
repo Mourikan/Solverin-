@@ -77,7 +77,9 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             for (h in heroIdx) {
                 val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                 bets[h] = t
-                val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, t.ev, p.mixBandBb)
+                // ThreeFlushTurnBrake: braked hands never overbet.
+                val betEv = if (size > p.standardBet && m.braked(h, facingRange)) Double.NEGATIVE_INFINITY else t.ev
+                val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, betEv, p.mixBandBb)
                 fc[h] = mix[1]; fb[h] = mix[2]
             }
             val foldAll = resp.foldTotal / resp.priorTotal * (xResp?.let { it.foldTotal / it.priorTotal } ?: 1.0)
@@ -90,6 +92,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
                 isValue = { m.eqVs(cont).equity(it) >= valueEq || m.isNut(it) },
                 priority = { m.semiBluffPriority(it, cont) }, foldAllowed = { false },
+                exempt = { m.exploitEligible(it, cont) && bets[it]!!.ev - check[it]!!.ev >= p.exploitOverrideBb },
             )
             fourFlushShield(m, heroIdx, fb, fc, null, capped, { check[it]!!.ev }, { false })
             var total = 0.0
@@ -134,12 +137,15 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             val c = m.call(h, potBefore, bet, betRange)
             val r = if (bet < spot.effectiveStackBb) m.raiseVsBet(h, potBefore, bet, betRange) else null
             call[h] = c; raise[h] = r
+            // ThreeFlushTurnBrake: no raise vs a big bet with a braked hand (pot control: call / fold).
+            val brakeRaise = bet >= p.brakeBigBet * pot && m.braked(h, betRange)
             // Min-bet guard: with pot-odds equity, or a +EV call once implied odds count, a fold is never allowed.
             val foldAllowed = !(minBet && (c.equity >= potOdds || c.ev > 0.0))
             // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
             // Four-flush shield: no all-in call without a flush card.
             val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h)))) Double.NEGATIVE_INFINITY else c.ev
-            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, callEv, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
+            val raiseEv = if (brakeRaise) Double.NEGATIVE_INFINITY else r?.ev ?: Double.NEGATIVE_INFINITY
+            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, callEv, raiseEv, p.mixBandBb)
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)
@@ -153,6 +159,8 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             isValue = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             priority = { m.semiBluffPriority(it, cont) },
             foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
+            exempt = { h -> m.exploitEligible(h, cont) &&
+                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= p.exploitOverrideBb },
         )
         if (!spot.heroInPosition) {
             val connected = m.impact.has(TurnCardCategory.FLUSH_COMPLETING) || m.impact.has(TurnCardCategory.STRAIGHT_COMPLETING)

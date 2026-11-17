@@ -2,6 +2,7 @@ package com.solverin.engine.turn
 
 import com.solverin.engine.eval.HandEvaluator
 import com.solverin.engine.flop.Combos
+import com.solverin.engine.math.PipelineBufferPool
 import java.util.IdentityHashMap
 
 /**
@@ -168,10 +169,10 @@ class TurnRiverProjectionEngine(
         val w = FloatArray(nv) { range[villainIdx[it]] }
         val eqTurn = FloatArray(Combos.COUNT); val clean = IntArray(Combos.COUNT); val dirty = IntArray(Combos.COUNT)
         val trapped = FloatArray(Combos.COUNT); val cleanEq = FloatArray(Combos.COUNT); val vOuts = IntArray(Combos.COUNT)
-        // Scratch buffers reused across hero combos (no per-combo allocation on mobile).
-        val shares = DoubleArray(nr)
-        val dominated = DoubleArray(nr)
-        for (a in 0 until nh) {
+        // Scratch buffers from the per-thread pool, reused across hero combos (no per-combo allocation on ART).
+        val shares = PipelineBufferPool.acquireDoubles(nr)
+        val dominated = PipelineBufferPool.acquireDoubles(nr)
+        try { for (a in 0 until nh) {
             val h = heroIdx[a]
             var tw = 0.0; var td = 0.0
             shares.fill(-1.0); dominated.fill(0.0)
@@ -210,7 +211,7 @@ class TurnRiverProjectionEngine(
             }
             if (clean[h] > 0) cleanEq[h] = (ce / clean[h]).toFloat()
             if (dirty[h] > 0) trapped[h] = (tr / dirty[h]).toFloat()
-        }
+        } } finally { PipelineBufferPool.release(shares); PipelineBufferPool.release(dominated) }
         return Projection(eqTurn, clean, dirty, trapped, cleanEq, vOuts)
     }
 

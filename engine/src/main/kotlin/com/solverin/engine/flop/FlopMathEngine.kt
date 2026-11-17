@@ -198,6 +198,18 @@ class FlopMathEngine(
         return outs[h] / 47.0 * payoff(range) * ext
     }
 
+    /** Backdoor flush draw plus at least one overcard to the board (PostflopMassiveExploitOverride on flop bets). */
+    fun backdoorOvercard(h: Int): Boolean {
+        val c1 = Combos.C1[h]; val c2 = Combos.C2[h]
+        val top = spot.board.maxOf { it ushr 2 }
+        if ((c1 ushr 2) <= top && (c2 ushr 2) <= top) return false
+        for (suit in 0 until 4) {
+            val hole = (if ((c1 and 3) == suit) 1 else 0) + (if ((c2 and 3) == suit) 1 else 0)
+            if (hole > 0 && hole + spot.board.count { (it and 3) == suit } == 3) return true
+        }
+        return false
+    }
+
     fun isNut(h: Int) = strength.inTop(h, p.nutFraction)
     fun isStrong(h: Int) = strength.inTop(h, p.strongFraction)
 

@@ -10,6 +10,7 @@ import com.solverin.engine.flop.FlopEquity
 import com.solverin.engine.flop.FlopSession
 import com.solverin.engine.flop.FlopSpot
 import com.solverin.engine.math.RakeModel
+import com.solverin.engine.preflop.IsoRaiseInterceptor
 import com.solverin.engine.preflop.PreflopContext
 import com.solverin.engine.preflop.PreflopEngine
 import com.solverin.engine.preflop.SpotAnalysis
@@ -41,6 +42,7 @@ import com.solverin.engine.turn.TurnSpot
 class HandPipelineEngine(
     private val preflopEngine: PreflopEngine = PreflopEngine(),
     private val flopStride: Int = FlopEquity.FAST_STRIDE,
+    private val isoInterceptor: IsoRaiseInterceptor = IsoRaiseInterceptor(),
 ) {
     private class Ctx(val script: HandScript, val state: HandSessionState) {
         val positions = HashMap<Seat, Position>()
@@ -108,6 +110,7 @@ class HandPipelineEngine(
             require(preflopEngine.isValid(key, ctx)) { "Invalid preflop node $key" }
             return preflopEngine.analyze(key, ctx)
         }
+        if (pf.line == PreflopLine.ISO_RAISE_CALL) { isoPreflop(c, t0); return }
         val rfi = solve(SpotKey.of(Scenario.RFI, pf.opener))
         val defend = solve(SpotKey.of(Scenario.VS_RFI, pf.responder, pf.opener))
         val weights = HashMap<Seat, FloatArray>()
@@ -129,6 +132,7 @@ class HandPipelineEngine(
                 heroNode = if (c.hero == Seat.OPENER) vs3 else defend
                 st.initiative = Seat.RESPONDER
             }
+            PreflopLine.ISO_RAISE_CALL -> error("handled by isoPreflop")
             PreflopLine.RFI_COLD_CALL_BB_CALL -> {
                 val squeeze = solve(SpotKey.of(Scenario.SQUEEZE, Position.BB, pf.opener, pf.responder))
                 weights[Seat.OPENER] = rfi.strategy.raiseWeights()
@@ -159,6 +163,28 @@ class HandPipelineEngine(
     }
 
     private fun Double?.orZero() = this ?: 0.0
+
+    /** Limped pot isolated by hero ([IsoRaiseInterceptor]): ranges and pot injected toward the flop. */
+    private fun isoPreflop(c: Ctx, t0: Long) {
+        val s = c.script; val pf = s.preflop; val st = c.state
+        val iso = isoInterceptor.analyze(pf.opener, pf.limpers, s.stake, s.stackBb)
+        val inHand = st.seats.map { c.pos(it) }.toSet()
+        st.deadBb = (pf.limpers.size - 1) * 1.0 +
+            Position.SB.blindBb.takeIf { Position.SB !in inHand }.orZero() + Position.BB.blindBb.takeIf { Position.BB !in inHand }.orZero()
+        st.ranges[Seat.OPENER] = Combos.fromClassWeights(iso.isoRange)
+        st.ranges[Seat.RESPONDER] = Combos.fromClassWeights(iso.callRange)
+        for (seat in st.seats) st.invest(seat, iso.sizeBb)
+        st.initiative = Seat.OPENER
+        st.rakeAccruedBb = RakeModel.rakeModel(s.stake.defaultRake, st.potBb, 0.0)
+        val hc = Combos.HAND_CLASS[c.heroCombo]
+        val best = iso.decision(hc)
+        c.reports += StreetReport(
+            Street.PREFLOP, IntArray(0), "ISO_RAISE_CALL(${pf.limpers.size} limpers, %.1fbb)".format(iso.sizeBb), st.potBb, st.effectiveStackBb,
+            st.seats.associateWith { st.stack(it) }, st.seats.associateWith { st.mass(it) }, emptySet(), heroOffTree = best != com.solverin.engine.preflop.IsoDecision.ISO_RAISE,
+            heroMix = iso.ev(hc).keys.associate { it.name to if (it == best) 1f else 0f }, heroEv = iso.ev(hc).mapKeys { it.key.name },
+            heroBetFraction = null, mdf = null, rakeAccruedBb = st.rakeAccruedBb, latencyNanos = System.nanoTime() - t0, iso = iso,
+        )
+    }
 
     // ---- card removal / smoothing -----------------------------------------------------------------------------------
 

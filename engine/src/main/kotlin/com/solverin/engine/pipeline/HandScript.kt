@@ -22,12 +22,21 @@ enum class PreflopLine {
     THREE_BET_CALL,
     /** Opener raises, responder cold-calls, BB overcalls (SQUEEZE node call). Initiative: opener. 3-way. */
     RFI_COLD_CALL_BB_CALL,
+    /**
+     * Limpers in front: the opener (hero) isolates via [com.solverin.engine.preflop.IsoRaiseInterceptor], the responder
+     * (one of the limpers) calls, the other limpers fold their dead 1bb. Initiative: opener.
+     */
+    ISO_RAISE_CALL,
 }
 
-data class PreflopAction(val line: PreflopLine, val opener: Position, val responder: Position) {
+data class PreflopAction(val line: PreflopLine, val opener: Position, val responder: Position, val limpers: List<Position> = emptyList()) {
     val third: Position? get() = if (line == PreflopLine.RFI_COLD_CALL_BB_CALL) Position.BB else null
     init {
         require(opener != responder) { "opener == responder" }
+        if (line == PreflopLine.ISO_RAISE_CALL) {
+            require(limpers.isNotEmpty() && responder in limpers && opener !in limpers) { "ISO_RAISE_CALL: the responder must be one of the limpers" }
+            require(limpers.none { it.isBlind } && limpers.all { it.ordinal < opener.ordinal }) { "Limpers act before the isolating player" }
+        } else require(limpers.isEmpty()) { "Limpers only with ISO_RAISE_CALL" }
         if (line == PreflopLine.RFI_COLD_CALL_BB_CALL) require(responder != Position.BB && opener != Position.BB) { "3-way line needs the BB as third player" }
     }
 }
@@ -78,6 +87,7 @@ data class HandScript(
     init {
         require(stackBb.isFinite() && stackBb > 0) { "Stack must be > 0" }
         require(heroSeat != Seat.THIRD || preflop.third != null) { "THIRD seat needs a 3-way line" }
+        require(preflop.line != PreflopLine.ISO_RAISE_CALL || heroSeat == Seat.OPENER) { "ISO_RAISE_CALL: hero is the isolating player" }
         require(flop.length == 6 && (turn == null || turn.length == 2) && (river == null || river.length == 2)) { "Board cards as 'AsKd7c', 'Th', '2c'" }
     }
 }

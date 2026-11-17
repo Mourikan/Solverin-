@@ -2,6 +2,7 @@ package com.solverin.engine.river
 
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.Draws
+import com.solverin.engine.math.PipelineBufferPool
 import com.solverin.engine.math.RakeModel
 import java.util.IdentityHashMap
 
@@ -216,9 +217,6 @@ class RiverMathEngine(
         val raiseValueShare: Double, val defense: Double, val bNut: Double, val bFold: Double,
     )
 
-    /** Scratch buffers of [responseOf] (reset after each call; no per-call allocation). */
-    private val usedScratch = DoubleArray(Combos.COUNT)
-    private val touchedIdx = IntArray(2 * Combos.COUNT)
 
     private fun responseOf(h: Int, range: FloatArray, idx: IntArray, size: Double, raiseFrac: Double, raiseValue: Double, blk: RiverBlockerEngine): Response {
         val m = Combos.MASK[h]; val sh = s.showdown.strength[h]
@@ -232,7 +230,9 @@ class RiverMathEngine(
         var callLeft = (def - r) * live
         var brLeft = r * (1 - raiseValue) * live
         var cw = 0.0; var cn = 0.0; var rw = 0.0; var rn = 0.0; var vw = 0.0; var vn = 0.0
-        val used = usedScratch
+        // Pooled scratch (per-thread): reset to zero through the touched list before release.
+        val used = PipelineBufferPool.acquireDoubles(Combos.COUNT)
+        val touchedIdx = PipelineBufferPool.acquireInts(2 * Combos.COUNT)
         var touched = 0
         fun res(b: Int): Double { val t = s.showdown.strength[b]; return if (sh > t) 1.0 else if (sh == t) 0.5 else 0.0 }
         for (b in idx) {
@@ -251,6 +251,7 @@ class RiverMathEngine(
             val t = minOf(avail, brLeft); brLeft -= t; rw += t; rn += t * res(b)
         }
         for (i in 0 until touched) used[touchedIdx[i]] = 0.0
+        PipelineBufferPool.release(used); PipelineBufferPool.release(touchedIdx)
         val pc = cw / live; val pr = rw / live
         val eqC = if (cw > 0) (cn / cw).toFloat() else 0.5f
         val eqR = if (rw > 0) (rn / rw).toFloat() else 0.5f
@@ -385,7 +386,7 @@ class RiverMathEngine(
 
     /** Hero bets [size] pot fractions (heads-up or into both players of a 3-way pot). */
     fun bet(h: Int, size: Double): RiverEvTerms {
-        val x = minOf(size * pot, stack)
+        val x = minOf(size * pot, stack).let { if (it >= stack - 1e-9) stack else it }
         val r = respond(h, size)
         if (extra != null) return betMulti(h, x, r)
         val allIn = x >= stack

@@ -88,6 +88,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                         heroIdx, m.hero, ratio, fb, fc, null,
                         aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
                         isValue = { m.eqVs(resp.continueRange).equity(it) >= 0.5f || m.isNut(it) }, foldAllowed = { false },
+                        exempt = { (m.outs[it] >= 8 || m.backdoorOvercard(it)) && bets[it]!!.ev - check[it]!!.ev >= p.exploitOverrideBb },
                     )
                     var total = 0.0
                     for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
@@ -160,6 +161,8 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
             foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+            exempt = { h -> m.outs[h] >= 8 &&
+                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= p.exploitOverrideBb },
         )
         if (!spot.heroInPosition) {
             val connected = m.texture.connectivity == Connectivity.HIGH || m.texture.volatility >= p.connectedVolatility

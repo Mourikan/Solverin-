@@ -35,13 +35,15 @@ object FlopBluffCap {
         heroIdx: List<Int>, weights: FloatArray, ratio: Double,
         agg: FloatArray, passive: FloatArray, fold: FloatArray?,
         aggEv: (Int) -> Double, passiveEv: (Int) -> Double, isValue: (Int) -> Boolean, foldAllowed: (Int) -> Boolean,
+        /** PostflopMassiveExploitOverride: bluffs with a blocker / draw and a massive EV edge keep their frequency. */
+        exempt: (Int) -> Boolean = { false },
     ): BooleanArray {
         val capped = BooleanArray(Combos.COUNT)
         var value = 0.0
         val bluffs = ArrayList<Int>()
         for (h in heroIdx) {
             if (agg[h] <= 0f) continue
-            if (isValue(h)) value += agg[h] * weights[h] else bluffs += h
+            if (isValue(h)) value += agg[h] * weights[h] else if (!exempt(h)) bluffs += h
         }
         var budget = value * ratio
         bluffs.sortByDescending { aggEv(it) - maxOf(if (foldAllowed(it) && fold != null) 0.0 else Double.NEGATIVE_INFINITY, passiveEv(it)) }

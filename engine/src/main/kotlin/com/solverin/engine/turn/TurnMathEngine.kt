@@ -336,6 +336,39 @@ class TurnMathEngine(
     fun isNut(h: Int): Boolean = safe(heroVsVillain.equity(h), 0f) > p.nutEquity
     fun isMinBet(bet: Double, potBefore: Double): Boolean = bet <= p.minBetRatio * potBefore || bet <= 1.0
 
+    /** Suit with exactly three cards on the turn board (3-flush), else −1. */
+    val threeFlushSuit: Int = run { val c = IntArray(4); for (x in spot.board) c[x and 3]++; c.indexOfFirst { it == 3 } }
+
+    private val brakeTexture: Boolean = threeFlushSuit >= 0 || impact.has(TurnCardCategory.STRAIGHT_COMPLETING)
+
+    private val madeShareCache = IdentityHashMap<FloatArray, Double>()
+
+    /** Share of [range] holding a made straight or better (flushes included) on the turn board. */
+    fun villainMadeShare(range: FloatArray): Double = madeShareCache.getOrPut(range) {
+        var t = 0.0; var m = 0.0
+        for (k in range.indices) { val w = range[k]; if (w <= 0f || strength.strength[k] < 0) continue; t += w; if (strength.category[k] >= 4) m += w }
+        if (t > 0) m / t else 0.0
+    }
+
+    /**
+     * ThreeFlushTurnBrake: on a 3-flush / straight-completing turn a vulnerable made hand (one pair .. trips, no card
+     * of the flush suit, no straight, < semiBluffOuts draw) facing a range with ≥ brakeVillainMadeShare made
+     * straights / flushes is braked: R_turn is penalized, no raise vs big bets, no overbet.
+     */
+    fun braked(h: Int, range: FloatArray): Boolean {
+        if (!brakeTexture) return false
+        val cat = strength.category[h]
+        if (cat !in 1..3 || drawOuts[h] >= p.semiBluffOuts) return false
+        if (threeFlushSuit >= 0 && ((Combos.C1[h] and 3) == threeFlushSuit || (Combos.C2[h] and 3) == threeFlushSuit)) return false
+        return villainMadeShare(range) >= p.brakeVillainMadeShare
+    }
+
+    /** PostflopMassiveExploitOverride eligibility: nut blocker (BF < exploitBlocker) or ≥ semiBluffOuts clean outs vs [range]. */
+    fun exploitEligible(h: Int, range: FloatArray): Boolean {
+        val o = outsVs(range)
+        return (nutTotal > 0.0 && blockerFactor(h) < p.exploitBlocker) || (o.behind(h) && o.clean[h] >= p.semiBluffOuts)
+    }
+
     /** Semi-bluff priority: ≥ semiBluffOuts clean outs vs [range], or blocks villain's nut combos (BF < 1). */
     fun semiBluffPriority(h: Int, range: FloatArray): Boolean {
         val o = outsVs(range)
@@ -359,6 +392,7 @@ class TurnMathEngine(
         val e = fieldEquity(pair)
         val opponents = pair.size
         val o = if (vRange != null) outsVs(vRange) else outsVsExtra(xRange!!)
+        val main = vRange ?: xRange!!
         val behind = behindAfter.coerceAtLeast(0.0)
         if (behind <= p.commitSpr * pot) {
             val potAll = pot + behind * (1 + opponents)
@@ -367,6 +401,7 @@ class TurnMathEngine(
             return Branch(e * potAll - inv - rk, e, 1f, potAll, inv, rk, 0.0, 0.0, true)
         }
         var r = realization(h, o, aggressor, behind, pot)
+        if (braked(h, main)) r *= 1 - p.brakeRealizationK * villainMadeShare(main)
         if (opponents > 1) r *= Math.pow(MULTIWAY_DECAY, (opponents - 1).toDouble())
         val eqR = minOf(e * r, MAX_EQR)
         val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind, eqR)

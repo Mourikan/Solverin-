@@ -178,6 +178,10 @@ data class RiverPolicy(
     val committedFoldMax: Double = 0.25,
     val committedOddsLow: Double = 0.10,
     val committedOddsHigh: Double = 0.35,
+    /** PostflopMassiveExploitOverride: B_nut < exploitBlocker and EV − check ≥ min(exploitOverrideBb, exploitPotShare × pot). */
+    val exploitOverrideBb: Double = 3.0,
+    val exploitPotShare: Double = 0.15,
+    val exploitBlocker: Double = 0.95,
     /** Four-flush / four-straight shield. */
     val fourCardShield: Boolean = true,
 )

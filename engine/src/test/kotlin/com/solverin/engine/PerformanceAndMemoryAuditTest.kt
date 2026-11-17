@@ -38,6 +38,7 @@ class PerformanceAndMemoryAuditTest {
 
     @Test fun twentyFullHandsLatencyAndHeap() {
         engine.play(hands(1, 1)[0]) // warm-up: preflop matrices + JIT
+        com.solverin.engine.math.PipelineBufferPool.resetStats()
         val before = usedHeap()
         val perStreet = Street.entries.associateWith { ArrayList<Double>() }
         val totals = ArrayList<Double>()
@@ -49,6 +50,9 @@ class PerformanceAndMemoryAuditTest {
             totals += r.totalNanos / 1e6
             val rt = Runtime.getRuntime(); peak = maxOf(peak, rt.totalMemory() - rt.freeMemory())
         }
+        val pool = com.solverin.engine.math.PipelineBufferPool.stats()
+        println("POOL 20 hands: allocated=${pool.allocated} reused=${pool.reused} retained=${com.solverin.engine.math.PipelineBufferPool.retained()}")
+        assertTrue(pool.reused > 100 * pool.allocated, "pooled scratch buffers are reused")
         val after = usedHeap()
         // Second batch: retained heap must not keep growing (no leak across hands).
         for (script in hands(77, 20)) engine.play(script)

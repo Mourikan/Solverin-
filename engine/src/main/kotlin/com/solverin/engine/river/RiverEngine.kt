@@ -29,15 +29,20 @@ class RiverSession(val spot: RiverSpot) {
         return if (spot.nodeType == RiverNodeType.VS_BET) facingBet(m, p, ctx, heroIdx) else betNode(m, p, ctx, heroIdx)
     }
 
+    /** River override threshold: min(exploitOverrideBb, exploitPotShare × pot). */
+    private fun exploitThreshold(p: RiverPolicy, pot: Double) = minOf(p.exploitOverrideBb, p.exploitPotShare * pot)
+
     /** Size gates: showdown protection, block / overbet polarization, four-card shield. */
     private fun sizeAllowed(m: RiverMathEngine, p: RiverPolicy, h: Int, size: Double, t: RiverEvTerms): Boolean {
         val eqT = m.eqTotal(h)
         val value = t.equity >= 0.5f
         if (m.showdownProtected(h, t.equity)) return false
-        if (RiverSizingOptimizer.isBlock(size, p) && !(eqT in p.blockValueLow..p.blockValueHigh || (!value && t.bNut < 1.0))) return false
+        // An all-in is never a block bet (low SPR caps every size at the stack).
+        val block = RiverSizingOptimizer.isBlock(size, p) && !t.allIn
+        if (block && !(eqT in p.blockValueLow..p.blockValueHigh || (!value && t.bNut < 1.0))) return false
         if ((RiverSizingOptimizer.isOverbet(size, p) || (t.allIn && size >= 1.0)) && !(eqT >= p.overbetValueEquity || (!value && t.bNut < 1.0))) return false
         if (m.fourCardBoard) {
-            if (value && !RiverSizingOptimizer.isBlock(size, p) && !m.shieldMade(h)) return false
+            if (value && !block && !m.shieldMade(h)) return false
             if (!value && !m.shieldBlocker(h)) return false
         }
         return true
@@ -86,6 +91,7 @@ class RiverSession(val spot: RiverSpot) {
                 aggEv = { betTerms[it]!!.ev }, passiveEv = { check[it]!!.ev },
                 isValue = { betTerms[it]!!.equity >= valueEq }, priority = { betTerms[it]!!.bNut < 1.0 && betTerms[it]!!.bFold >= 1.0 },
                 foldAllowed = { false },
+                exempt = { betTerms[it]!!.bNut < p.exploitBlocker && betTerms[it]!!.ev - check[it]!!.ev >= exploitThreshold(p, pot) },
             )
             for (h in bucket) { fb[h] = agg[h]; fc[h] = pas[h]; if (cut[h]) capped[h] = true }
         }
@@ -142,6 +148,8 @@ class RiverSession(val spot: RiverSpot) {
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { (raise[it]?.equity ?: 0f) >= 0.5f }, priority = { raise[it]?.let { r -> r.bNut < 1.0 && r.bFold >= 1.0 } ?: false },
             foldAllowed = ::foldAllowed,
+            exempt = { h -> raise[h]?.let { r -> r.bNut < p.exploitBlocker &&
+                r.ev - maxOf(call[h]!!.ev, if (foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY) >= exploitThreshold(p, pot) } ?: false },
         )
         if (!spot.heroInPosition) {
             TurnBluffCap.capTotal(heroIdx, m.hero, p.checkRaiseCap, fR, fC, fF, capped,

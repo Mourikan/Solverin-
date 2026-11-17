@@ -116,6 +116,8 @@ data class FlopPolicy(
     val initiativeAggressor: Double = 1.03,
     val initiativeCaller: Double = 0.97,
     val lowSpr: Double = 1.5,
+    /** PostflopMassiveExploitOverride: bets with ≥ 8 outs or backdoor flush + overcard, raises with ≥ 8 outs, exempt from the cap when EV − passive ≥ this. */
+    val exploitOverrideBb: Double = 0.25,
 )
 
 data class FlopContext(

@@ -12,7 +12,7 @@ object RiverSizingOptimizer {
         if (spr <= 0.0) return emptyList()
         val raw = mutableListOf(p.blockBet, p.thinBet, p.standardBet)
         if (overbetEnabled(nutAdvantage, villainCapped, p)) { raw += p.overbetLow; raw += p.overbetHigh; raw += p.overbetMax; raw += spr }
-        return raw.map { minOf(it, spr) }.map { Math.floor(it * 1000) / 1000.0 }.filter { it > 0.0 }.distinct().sorted()
+        return raw.map { if (it >= spr) spr else Math.floor(it * 1000) / 1000.0 }.filter { it > 0.0 }.distinct().sorted()
     }
 
     fun isBlock(size: Double, p: RiverPolicy): Boolean = size <= p.thinBet + 1e-9

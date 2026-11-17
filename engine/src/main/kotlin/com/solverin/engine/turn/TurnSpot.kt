@@ -209,6 +209,15 @@ data class TurnPolicy(
     val checkRaiseCapConnected: Double = 0.20,
     val checkRaiseCap: Double = 0.28,
     val stackOffBluffMarginBb: Double = 1.0,
+    /** PostflopMassiveExploitOverride: blocker (BF < exploitBlocker) or ≥ semiBluffOuts clean outs, and EV − passive ≥ exploitOverrideBb. */
+    val exploitOverrideBb: Double = 1.5,
+    val exploitBlocker: Double = 0.95,
+    /** ThreeFlushTurnBrake: villain's made flush / straight share of his betting range that triggers it. */
+    val brakeVillainMadeShare: Double = 0.08,
+    /** Bets ≥ this pot fraction count as "big" for the brake (no raise vs them, no overbet). */
+    val brakeBigBet: Double = 0.5,
+    /** R_turn × (1 − brakeRealizationK · villain made share) for braked hands. */
+    val brakeRealizationK: Double = 0.5,
     /** Four-flush turn: combos without a card of the flush suit never bet / raise (no value, no bluff without a blocker). */
     val fourFlushShield: Boolean = true,
     val weakDonkMdfSlack: Double = 0.05,
