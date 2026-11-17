@@ -136,9 +136,90 @@ class TurnMathEngine(
         else -> prof.stab
     }
 
+    /** Reference turn raise: over villain's facing bet, or over his profile-size bet in the check subtree. */
+    private val referenceRaise: Pair<Double, Double> = run {
+        val pot = spot.potBb
+        val b = if (spot.nodeType == TurnNodeType.VS_BET) minOf(spot.facingBetBb, stack) else minOf(prof.betSizeFraction * pot, stack)
+        b to raiseTo(b, pot + b)
+    }
+
+    /** Pot odds villain faces after hero's reference raise (call amount / final pot). */
+    val raisePotOdds: Double = run {
+        val (b, to) = referenceRaise
+        val call = (to - b).coerceAtLeast(0.0)
+        val fin = spot.potBb + b + to + call
+        if (fin <= 0.0) 0.0 else call / fin
+    }
+
+    /**
+     * Villain's fold vs a turn raise without a node lock: profile foldToRaise × range condensation of the entry line ×
+     * price factor (pot odds / reference, [0.5, 1.2]); in RAISE_CALL pots or SPR ≤ committedSpr it contracts to the
+     * committed band [committedFoldMin, committedFoldMax] by the jam pot odds, blending back to the condensed value by
+     * SPR committedSpr + committedBlendSpr. A VS_TURN_RAISE lock replaces it (see [flopLocks]).
+     */
+    val raiseFoldEndogenous: Double = run {
+        val condensation = when (spot.line) {
+            FlopLine.CHECK_CHECK -> p.raiseFoldCondensationCheckCheck
+            FlopLine.BET_CALL -> p.raiseFoldCondensationBetCall
+            FlopLine.MULTIWAY_3WAY -> p.raiseFoldCondensationMultiway
+            FlopLine.RAISE_CALL -> p.raiseFoldCondensationRaiseCall
+        }
+        val price = (raisePotOdds / p.raiseFoldReferenceOdds).coerceIn(0.5, 1.2)
+        val open = (prof.foldToRaise * condensation * price).coerceIn(0.0, 0.95)
+        val t = ((raisePotOdds - p.committedOddsLow) / (p.committedOddsHigh - p.committedOddsLow)).coerceIn(0.0, 1.0)
+        val band = minOf(open, p.committedFoldMin + (p.committedFoldMax - p.committedFoldMin) * t)
+        val spr = spot.effectiveStackBb / spot.potBb
+        when {
+            spot.line == FlopLine.RAISE_CALL || spr <= p.committedSpr -> band
+            else -> band + (open - band) * ((spr - p.committedSpr) / p.committedBlendSpr).coerceIn(0.0, 1.0)
+        }
+    }
+
+    /**
+     * Villain's fold vs hero's jam over his own turn raise without a VS_JAM lock: (1 − profile callJam) × condensation,
+     * contracted to the committed band by the jam pot odds when his raise leaves him committed (remaining SPR ≤
+     * committedSpr) or in RAISE_CALL pots. Reference: hero bets standardBet, villain raises, hero jams.
+     */
+    val jamFoldEndogenous: Double = run {
+        val pot = spot.potBb
+        val condensation = when (spot.line) {
+            FlopLine.CHECK_CHECK -> p.raiseFoldCondensationCheckCheck
+            FlopLine.BET_CALL -> p.raiseFoldCondensationBetCall
+            FlopLine.MULTIWAY_3WAY -> p.raiseFoldCondensationMultiway
+            FlopLine.RAISE_CALL -> p.raiseFoldCondensationRaiseCall
+        }
+        val open = ((1 - prof.callJam) * condensation).coerceIn(0.0, 0.95)
+        val b = minOf(p.standardBet * pot, stack)
+        val y = raiseTo(b, pot + b)
+        if (y >= stack || stack <= 0.0) return@run open
+        val odds = (stack - y) / (pot + 2 * stack)
+        val t = ((odds - p.committedOddsLow) / (p.committedOddsHigh - p.committedOddsLow)).coerceIn(0.0, 1.0)
+        val band = minOf(open, p.committedFoldMin + (p.committedFoldMax - p.committedFoldMin) * t)
+        val sprAfter = (stack - y) / (pot + 2 * y)
+        when {
+            spot.line == FlopLine.RAISE_CALL || sprAfter <= p.committedSpr -> band
+            else -> band + (open - band) * ((sprAfter - p.committedSpr) / p.committedBlendSpr).coerceIn(0.0, 1.0)
+        }
+    }
+
+    /** Villain's effective fold vs hero's jam over his raise (lock first). */
+    val jamFold: Double get() = ctx.locks[TurnVillainNode.VS_JAM]?.fold ?: jamFoldEndogenous
+
+    /** Villain's effective fold vs hero's turn raise (lock first). */
+    val raiseFold: Double get() = ctx.locks[TurnVillainNode.VS_TURN_RAISE]?.fold ?: raiseFoldEndogenous
+
+    /** Turn donk read when villain leads into the flop aggressor; null otherwise. */
+    val donkType: TurnDonkType? = if (spot.villainBetNode != TurnVillainNode.DONK) null else {
+        val changing = impact.has(TurnCardCategory.FLUSH_COMPLETING) || impact.has(TurnCardCategory.STRAIGHT_COMPLETING) ||
+            impact.has(TurnCardCategory.BOARD_PAIRING)
+        if (changing && villainNutShare >= heroNutShare) TurnDonkType.POLARIZED else TurnDonkType.WEAK
+    }
+
+    private val donkValueShare: Double? = donkType?.let { if (it == TurnDonkType.POLARIZED) p.polarDonkValueShare else p.weakDonkValueShare }
+
     private val flopProfile = FlopProfile(
         foldToBet = ref50(responseFold), raiseVsBet = prof.raiseVsBet, cbet = firstFrequency, stabVsCheck = firstFrequency,
-        donk = firstFrequency, foldToRaise = prof.foldToRaise, reraiseVsRaise = prof.reraiseVsRaise, callJam = prof.callJam,
+        donk = firstFrequency, foldToRaise = raiseFoldEndogenous, reraiseVsRaise = prof.reraiseVsRaise, callJam = 1 - jamFoldEndogenous,
         betValueShare = prof.betValueShare, raiseValueShare = prof.raiseValueShare, betSizeFraction = prof.betSizeFraction,
         foldToDonk = ref50(responseFold), microBetMaxFold = prof.microBetMaxFold,
     )
@@ -183,7 +264,7 @@ class TurnMathEngine(
     private val firstNode = if (spot.villainBetNode == TurnVillainNode.DONK) FlopVillainNode.DONK else FlopVillainNode.STAB
 
     /** Villain's first action at this node (raise = betting range, fold = checking range). */
-    val villainFirstAction: ComboPartition = villainModel.firstAction(villain, firstNode)
+    val villainFirstAction: ComboPartition = villainModel.firstAction(villain, firstNode, donkValueShare)
 
     // ---- third player ------------------------------------------------------------------------------
 
@@ -244,6 +325,13 @@ class TurnMathEngine(
         if (behind <= 0.0 || o.dirty[h] == 0) return 0.0
         return o.dirty[h].toDouble() / TurnRiverProjectionEngine.UNSEEN_RIVERS * minOf(behind, pot * prof.betSizeFraction) * o.trapped[h]
     }
+
+    /** Flush suit of a four-flush turn board, else −1. */
+    val fourFlushSuit: Int = run { val c = IntArray(4); for (x in spot.board) c[x and 3]++; c.indexOfFirst { it >= 4 } }
+
+    /** Four-flush shield: [h] holds no card of the flush suit → no bet / raise / stack-off. */
+    fun shielded(h: Int): Boolean = p.fourFlushShield && fourFlushSuit >= 0 &&
+        (Combos.C1[h] and 3) != fourFlushSuit && (Combos.C2[h] and 3) != fourFlushSuit
 
     fun isNut(h: Int): Boolean = safe(heroVsVillain.equity(h), 0f) > p.nutEquity
     fun isMinBet(bet: Double, potBefore: Double): Boolean = bet <= p.minBetRatio * potBefore || bet <= 1.0
@@ -362,8 +450,15 @@ class TurnMathEngine(
     }
 
     /** Hero's decision after a re-raise of hero's street total [x]: fold (−a), call, or (level 1) jam. */
-    class ReraiseResponse(val reraiseTo: Double, val toCall: Double, val call: Branch, val jamEv: Double, val invested: Double) {
-        val callEv: Double get() = call.value
+    /**
+     * [jamEquity]: hero's equity vs villain's calling range of the jam (NaN when no jam is possible);
+     * [callAllowed] false when an all-in call is shielded (four-flush without a flush card).
+     */
+    class ReraiseResponse(
+        val reraiseTo: Double, val toCall: Double, val call: Branch, val jamEv: Double, val invested: Double,
+        val jamEquity: Double = Double.NaN, val rawJamEv: Double = Double.NEGATIVE_INFINITY, val callAllowed: Boolean = true,
+    ) {
+        val callEv: Double get() = if (callAllowed) call.value else Double.NEGATIVE_INFINITY
         val best: TurnAction get() = when {
             maxOf(callEv, jamEv) <= 0.0 -> TurnAction.FOLD
             jamEv > callEv -> TurnAction.RAISE
@@ -383,6 +478,8 @@ class TurnMathEngine(
         val callBranch = if (extra) calledMulti(h, null, raiseRange, potR + toCall, toCall, stack - y, aggressor = false)
         else called(h, raiseRange, potR + toCall, toCall, stack - y, aggressor = false)
         var jamEv = Double.NEGATIVE_INFINITY
+        var jamEq = Double.NaN
+        var rawJam = Double.NEGATIVE_INFINITY
         if (level == 1 && y < stack) {
             val jr = model.respondToJam(raiseRange)
             val pr = jr.probabilities(h)
@@ -390,9 +487,12 @@ class TurnMathEngine(
             val ej = safe((if (extra) eqVsExtra(jr.call) else eqVs(jr.call)).equity(h), 0f).toDouble()
             val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, fin, 0.0, ej)
             jamEv = pr[0] * potR + (pr[1] + pr[2]) * (ej * fin - (stack - x) - rk)
+            jamEq = ej; rawJam = jamEv
             if (ej < 0.5 && jamEv < maxOf(0.0, callBranch.value) + p.stackOffBluffMarginBb) jamEv = Double.NEGATIVE_INFINITY
         }
-        return ReraiseResponse(y, toCall, callBranch, jamEv, a)
+        val shield = shielded(h)
+        if (shield) jamEv = Double.NEGATIVE_INFINITY
+        return ReraiseResponse(y, toCall, callBranch, jamEv, a, jamEq, rawJam, callAllowed = !(shield && callBranch.allIn))
     }
 
     fun reraiseResponse(h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int): ReraiseResponse {

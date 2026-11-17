@@ -89,6 +89,9 @@ class TurnSpot(
 }
 
 /** Villain turn decision points (node-lockable). */
+/** Turn donk read: weak block / protection lead vs polarized lead on a texture-changing card. */
+enum class TurnDonkType { WEAK, POLARIZED }
+
 enum class TurnVillainNode {
     VS_SECOND_BARREL, VS_DELAYED_CBET, VS_PROBE, VS_DONK, VS_BET, VS_TURN_RAISE, VS_JAM,
     BARREL, DELAYED_CBET, PROBE, DONK, STAB, RIVER_ELASTICITY,
@@ -206,7 +209,27 @@ data class TurnPolicy(
     val checkRaiseCapConnected: Double = 0.20,
     val checkRaiseCap: Double = 0.28,
     val stackOffBluffMarginBb: Double = 1.0,
+    /** Four-flush turn: combos without a card of the flush suit never bet / raise (no value, no bluff without a blocker). */
+    val fourFlushShield: Boolean = true,
     val weakDonkMdfSlack: Double = 0.05,
+    /** Range condensation of the entry line on villain's fold vs a turn raise (no lock). */
+    val raiseFoldCondensationCheckCheck: Double = 1.0,
+    val raiseFoldCondensationBetCall: Double = 0.9,
+    val raiseFoldCondensationMultiway: Double = 0.85,
+    val raiseFoldCondensationRaiseCall: Double = 0.6,
+    /** Pot odds villain faces after a standard 3× raise over a 66% bet: price reference of foldToRaise. */
+    val raiseFoldReferenceOdds: Double = 0.27,
+    /** Committed band (RAISE_CALL or SPR ≤ committedSpr): fold vs raise from committedFoldMin to committedFoldMax by pot odds. */
+    val committedSpr: Double = 1.5,
+    val committedFoldMin: Double = 0.15,
+    val committedFoldMax: Double = 0.28,
+    val committedOddsLow: Double = 0.10,
+    val committedOddsHigh: Double = 0.35,
+    /** Above committedSpr the band blends into the condensed profile value over this SPR span. */
+    val committedBlendSpr: Double = 2.5,
+    /** Turn donk value shares: weak (block / protection) vs polarized (texture-changing card). */
+    val weakDonkValueShare: Double = 0.35,
+    val polarDonkValueShare: Double = 0.75,
 )
 
 data class TurnContext(

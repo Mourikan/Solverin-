@@ -11,6 +11,20 @@ class TurnEngine {
 }
 
 class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
+    /** Moves the aggressive frequency of shielded combos to passive (or fold when allowed and passive EV < 0). */
+    private fun fourFlushShield(
+        m: TurnMathEngine, heroIdx: List<Int>, agg: FloatArray, passive: FloatArray, fold: FloatArray?, capped: BooleanArray,
+        passiveEv: (Int) -> Double, foldAllowed: (Int) -> Boolean,
+    ) {
+        for (h in heroIdx) {
+            if (agg[h] <= 0f || !m.shielded(h)) continue
+            val moved = agg[h]
+            agg[h] = 0f
+            capped[h] = true
+            if (fold == null || !foldAllowed(h) || passiveEv(h) >= 0.0) passive[h] += moved else fold[h] += moved
+        }
+    }
+
     private val shared = TurnMathEngine.Shared(spot)
 
     init {
@@ -47,7 +61,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                  capped: BooleanArray = BooleanArray(Combos.COUNT)) = TurnAnalysis(
             spot, m.impact, spot.nodeType, m.rangeAdvantage, m.nutAdvantage, m.villainCapped,
             m.heroVsVillain.rangeEquity(m.hero), size, bet, null, null, false, freq, terms, m.hero, capped,
-            sizes, elasticity, geometric, null,
+            sizes, elasticity, geometric, null, m.donkType,
         )
         if (sizes.isEmpty()) {
             val fc = FloatArray(Combos.COUNT); for (h in heroIdx) fc[h] = 1f
@@ -77,6 +91,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 isValue = { m.eqVs(cont).equity(it) >= valueEq || m.isNut(it) },
                 priority = { m.semiBluffPriority(it, cont) }, foldAllowed = { false },
             )
+            fourFlushShield(m, heroIdx, fb, fc, null, capped, { check[it]!!.ev }, { false })
             var total = 0.0
             for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
             if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped)
@@ -119,9 +134,11 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             val c = m.call(h, potBefore, bet, betRange)
             val r = if (bet < spot.effectiveStackBb) m.raiseVsBet(h, potBefore, bet, betRange) else null
             call[h] = c; raise[h] = r
-            val foldAllowed = !(minBet && c.equity >= potOdds)
+            // Min-bet guard: with pot-odds equity, or a +EV call once implied odds count, a fold is never allowed.
+            val foldAllowed = !(minBet && (c.equity >= potOdds || c.ev > 0.0))
             // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
-            val callEv = if (c.drawNeedsImplied && c.ev <= 0.0 && foldAllowed) Double.NEGATIVE_INFINITY else c.ev
+            // Four-flush shield: no all-in call without a flush card.
+            val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h)))) Double.NEGATIVE_INFINITY else c.ev
             val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, callEv, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
@@ -135,25 +152,31 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             priority = { m.semiBluffPriority(it, cont) },
-            foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+            foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
         )
         if (!spot.heroInPosition) {
             val connected = m.impact.has(TurnCardCategory.FLUSH_COMPLETING) || m.impact.has(TurnCardCategory.STRAIGHT_COMPLETING)
             TurnBluffCap.capTotal(
                 heroIdx, m.hero, if (connected) p.checkRaiseCapConnected else p.checkRaiseCap, fRaise, fCall, fFold, capped,
                 aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
-                foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+                foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
             )
         }
+        fourFlushShield(m, heroIdx, fRaise, fCall, fFold, capped, { call[it]!!.ev },
+            { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) })
         val mdf = pot / (pot + bet)
-        val mdfFloor = if (minBet) 1 - mdf else null
+        val mdfFloor = when {
+            minBet -> 1 - mdf
+            spot.isDonk && m.donkType == TurnDonkType.WEAK -> minOf(1.0, 1 - mdf + p.weakDonkMdfSlack)
+            else -> null
+        }
         if (mdfFloor != null) enforceMdf(heroIdx, m.hero, mdfFloor, fFold, fCall) { call[it]!!.ev }
         return TurnAnalysis(
             spot, m.impact, TurnNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage, m.villainCapped,
             m.heroVsVillain.rangeEquity(m.hero), null, null, mdf, potOdds, minBet,
             mapOf(TurnAction.FOLD to fFold, TurnAction.CALL to fCall, TurnAction.RAISE to fRaise),
             mapOf(TurnAction.CALL to call, TurnAction.RAISE to raise), m.hero, capped,
-            emptyList(), Double.NaN, TurnSizingOptimizer.geometricFraction(spot.effectiveStackBb / pot), mdfFloor,
+            emptyList(), Double.NaN, TurnSizingOptimizer.geometricFraction(spot.effectiveStackBb / pot), mdfFloor, m.donkType,
         )
     }
 }
@@ -183,6 +206,8 @@ class TurnAnalysis(
     /** 2-street geometric pot fraction (turn + river all-in). */
     val geometricSize: Double,
     val maxFold: Double?,
+    /** Turn donk read when villain leads into the flop aggressor. */
+    val donkType: TurnDonkType? = null,
 ) {
     fun capped(combo: Int): Boolean = capped[combo]
     val actions: List<TurnAction> get() = freq.keys.toList()
