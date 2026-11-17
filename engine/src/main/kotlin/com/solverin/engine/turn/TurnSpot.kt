@@ -171,15 +171,20 @@ data class TurnPolicy(
     val villainOutsWeight: Double = 0.5,
     val lowSpr: Double = 1.0,
     /** LeverageFactor α_pos (IP / OOP); the factor is clamped to [1, maxLeverage]. */
-    val leverageAlphaIp: Double = 1.0,
-    val leverageAlphaOop: Double = 0.7,
+    val leverageAlphaIp: Double = 3.0,
+    val leverageAlphaOop: Double = 1.5,
     val maxLeverage: Double = 1.25,
     /** Clean out: EQ_turn < 0.5 and EQ_river ≥ cleanRiverEquity. */
     val cleanRiverEquity: Double = 0.80,
-    /** Dirty out: hero improves category, dirtyLow ≤ EQ_river < dirtyHigh, villain improved-and-ahead share ≥ dirtyNutShare. */
+    /**
+     * Dirty out: hero improves category, dirtyLow ≤ EQ_river < dirtyHigh and the villain combos that improved and beat
+     * hero are ≥ dirtyNutShare of villain's estimated river continuation range (range × river call elasticity).
+     */
     val dirtyLow: Double = 0.35,
     val dirtyHigh: Double = 0.70,
     val dirtyNutShare: Double = 0.15,
+    /** Floor of the estimated river continuation fraction (a river folder still defends his nuts). */
+    val minRiverContinue: Double = 0.05,
     /** Villain clean out (hero ahead on the turn): EQ_river below this. */
     val villainOutEquity: Double = 0.40,
     /** River nut threshold for ΔNuts_river and river nut blockers. */

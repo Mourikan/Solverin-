@@ -39,7 +39,8 @@ class TurnEquityMatrix(val projection: TurnRiverProjectionEngine) : EquityProvid
 
     val bytes: Int get() = eq.size * 2
 
-    fun outs(villainRange: FloatArray): TurnRiverProjectionEngine.Projection = projection.project(villainRange)
+    fun outs(villainRange: FloatArray, continueFraction: Double = 1.0): TurnRiverProjectionEngine.Projection =
+        projection.project(villainRange, continueFraction)
 
     private fun pair(a: Int, b: Int): Float {
         val q = eq[a * villainIdx.size + b]

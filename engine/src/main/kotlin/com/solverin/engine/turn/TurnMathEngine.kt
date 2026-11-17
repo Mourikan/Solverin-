@@ -66,8 +66,8 @@ class TurnMathEngine(
 
     fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.heroVs(range) }
     fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.getOrPut(range) { extraEquity!!.heroVs(range) }
-    fun outsVs(range: FloatArray): TurnRiverProjectionEngine.Projection = equity.outs(range)
-    private fun outsVsExtra(range: FloatArray): TurnRiverProjectionEngine.Projection = extraEquity!!.outs(range)
+    fun outsVs(range: FloatArray): TurnRiverProjectionEngine.Projection = equity.outs(range, riverContinueFraction)
+    private fun outsVsExtra(range: FloatArray): TurnRiverProjectionEngine.Projection = extraEquity!!.outs(range, riverContinueFraction)
 
     val heroVsVillain: FlopEquity.Result = eqVs(villain)
     private val villainVsHero: FlopEquity.Result = equity.villainVs(hero)
@@ -161,6 +161,9 @@ class TurnMathEngine(
     val station: Boolean get() = ctx.locks[spot.villainResponseNode]?.fold?.let { it <= p.stationFold } ?: false
 
     val riverElasticity: Double = ctx.locks[TurnVillainNode.RIVER_ELASTICITY]?.frequency ?: prof.riverCallElasticity
+
+    /** Estimated share of villain's range continuing vs a river bet (dirty-out reference). */
+    val riverContinueFraction: Double get() = riverElasticity.coerceIn(p.minRiverContinue, 1.0)
 
     private val villainLive = (0 until Combos.COUNT).filter { villain[it] > 0f }
     private fun safe(e: Float, d: Float) = if (e.isNaN()) d else e

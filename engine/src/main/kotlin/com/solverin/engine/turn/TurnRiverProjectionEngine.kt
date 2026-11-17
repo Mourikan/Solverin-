@@ -10,8 +10,9 @@ import java.util.IdentityHashMap
  * Per hero combo h and river c_r: EQ_river(h | c_r) = showdown share vs Range_V \ {c_r} on Board ∪ {c_r}.
  * Disjoint river classes (vs any villain sub-range, memoized by array identity):
  *  - O_clean: EQ_turn(h) < 0.5 and EQ_river ≥ cleanRiverEquity;
- *  - O_dirty: hero's hand category improves, dirtyLow ≤ EQ_river < dirtyHigh and the share of villain combos that
- *    improved their own category AND beat hero is ≥ dirtyNutShare (full house / higher flush / higher straight);
+ *  - O_dirty: hero's hand category improves, dirtyLow ≤ EQ_river < dirtyHigh and the villain combos that improved
+ *    their own category AND beat hero (full house / higher flush / higher straight) are ≥ dirtyNutShare of villain's
+ *    estimated river continuation range vs a bet: Range_V · continueFraction (river call elasticity);
  *  - villain clean outs: EQ_turn(h) ≥ 0.5 and EQ_river < villainOutEquity.
  * Against the base (perceived) ranges:
  *  - S_bluff: hero's category does not improve and EQ_river < 0.5, RiverNutBlocker(h, c_r) < 1 (villain's
@@ -32,7 +33,7 @@ class TurnRiverProjectionEngine(
     private val vTurn: IntArray
     internal val hMask: LongArray
     internal val vMask: LongArray
-    private val cache = IdentityHashMap<FloatArray, Projection>()
+    private val cache = IdentityHashMap<FloatArray, HashMap<Double, Projection>>()
 
     /** ΔNuts_river per river (hero share of > riverNutEquity combos − villain share), base ranges. */
     val riverNutDelta: DoubleArray
@@ -152,9 +153,17 @@ class TurnRiverProjectionEngine(
     /** River nut blocker reference [0, 1]: share of the 46 rivers that are scare cards for [h]. */
     fun scareShare(h: Int): Double = scare[h].toDouble() / UNSEEN_RIVERS
 
-    fun project(range: FloatArray): Projection = cache.getOrPut(range) { compute(range) }
+    /**
+     * Projection vs [range]; [continueFraction] = share of that range estimated to continue vs a river bet (dirty-out
+     * reference). Memoized by (array identity, fraction).
+     */
+    fun project(range: FloatArray, continueFraction: Double = 1.0): Projection {
+        val cf = continueFraction.coerceIn(policy.minRiverContinue, 1.0)
+        return cache.getOrPut(range) { HashMap() }.getOrPut(cf) { compute(range, cf) }
+    }
 
-    private fun compute(range: FloatArray): Projection {
+    private fun compute(range: FloatArray, continueFraction: Double): Projection {
+        val dirtyShare = policy.dirtyNutShare * continueFraction
         val nh = heroIdx.size; val nv = villainIdx.size; val nr = rivers.size
         val w = FloatArray(nv) { range[villainIdx[it]] }
         val eqTurn = FloatArray(Combos.COUNT); val clean = IntArray(Combos.COUNT); val dirty = IntArray(Combos.COUNT)
@@ -193,7 +202,7 @@ class TurnRiverProjectionEngine(
                 val improves = (hRiver[a * nr + ri] ushr 20) > (hTurn[a] ushr 20)
                 when {
                     eq < 0.5f && s >= policy.cleanRiverEquity -> { clean[h]++; ce += s }
-                    improves && s >= policy.dirtyLow && s < policy.dirtyHigh && dominated[ri] >= policy.dirtyNutShare -> { dirty[h]++; tr += 1 - s }
+                    improves && s >= policy.dirtyLow && s < policy.dirtyHigh && dominated[ri] >= dirtyShare -> { dirty[h]++; tr += 1 - s }
                     eq >= 0.5f && s < policy.villainOutEquity -> vOuts[h]++
                 }
             }
