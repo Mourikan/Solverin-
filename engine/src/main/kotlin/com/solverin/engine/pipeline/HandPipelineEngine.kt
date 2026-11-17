@@ -66,13 +66,17 @@ class HandPipelineEngine(
         pf.third?.let { c.positions[Seat.THIRD] = it }
         c.multiway = pf.third != null
         c.threeBetPot = pf.line == PreflopLine.THREE_BET_CALL
-        val flop = parseBoard(script.flop)
+        val flop = script.flop?.let { parseBoard(it) } ?: IntArray(0)
         val turn = script.turn?.let { Card.parse(it) }
         val river = script.river?.let { Card.parse(it) }
         val all = flop + listOfNotNull(turn, river) + intArrayOf(Combos.C1[c.heroCombo], Combos.C2[c.heroCombo])
         require(all.toSet().size == all.size) { "Duplicate cards between board and hero hand" }
 
         preflop(c)
+        if (script.flop == null) {
+            return HandResult(script, c.reports, HandStatus.IN_PROGRESS, c.state.potBb, c.state.seats.associateWith { c.state.stack(it) }, null,
+                c.state.rakeAccruedBb, System.nanoTime() - t0)
+        }
         if (c.state.status == HandStatus.IN_PROGRESS) flop(c, flop, turn)
         if (c.state.status == HandStatus.IN_PROGRESS && turn != null) turn(c, flop + turn, river)
         if (c.state.status == HandStatus.IN_PROGRESS && turn != null && river != null) river(c, flop + turn + river)

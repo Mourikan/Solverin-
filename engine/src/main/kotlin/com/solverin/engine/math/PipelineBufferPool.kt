@@ -14,32 +14,34 @@ object PipelineBufferPool {
         val stats = Stats()
     }
 
-    private val local = ThreadLocal.withInitial { Pool() }
+    /** Every thread's pool (weakly held) so [clearAll] can release buffers of worker threads too. */
+    private val registry: MutableSet<Pool> = java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(java.util.WeakHashMap()))
+
+    private val local = ThreadLocal.withInitial { Pool().also { registry += it } }
 
     /** Max buffers retained per length (bounded footprint). */
     const val MAX_PER_SIZE = 8
 
     fun acquireDoubles(size: Int): DoubleArray {
         val p = local.get()
-        val q = p.doubles[size]
-        val b = q?.removeLastOrNull()
+        val b = synchronized(p) { p.doubles[size]?.removeLastOrNull() }
         return if (b != null) { p.stats.reused++; b.fill(0.0); b } else { p.stats.allocated++; DoubleArray(size) }
     }
 
     fun release(b: DoubleArray) {
-        val q = local.get().doubles.getOrPut(b.size) { ArrayDeque() }
-        if (q.size < MAX_PER_SIZE) q.addLast(b)
+        val p = local.get()
+        synchronized(p) { val q = p.doubles.getOrPut(b.size) { ArrayDeque() }; if (q.size < MAX_PER_SIZE) q.addLast(b) }
     }
 
     fun acquireInts(size: Int): IntArray {
         val p = local.get()
-        val b = p.ints[size]?.removeLastOrNull()
+        val b = synchronized(p) { p.ints[size]?.removeLastOrNull() }
         return if (b != null) { p.stats.reused++; b.fill(0); b } else { p.stats.allocated++; IntArray(size) }
     }
 
     fun release(b: IntArray) {
-        val q = local.get().ints.getOrPut(b.size) { ArrayDeque() }
-        if (q.size < MAX_PER_SIZE) q.addLast(b)
+        val p = local.get()
+        synchronized(p) { val q = p.ints.getOrPut(b.size) { ArrayDeque() }; if (q.size < MAX_PER_SIZE) q.addLast(b) }
     }
 
     inline fun <T> withDoubles(size: Int, block: (DoubleArray) -> T): T {
@@ -58,5 +60,13 @@ object PipelineBufferPool {
     fun resetStats() { local.get().stats.let { it.allocated = 0; it.reused = 0 } }
 
     /** Buffers currently retained by this thread's pool. */
-    fun retained(): Int = local.get().let { p -> p.doubles.values.sumOf { it.size } + p.ints.values.sumOf { it.size } }
+    fun retained(): Int = local.get().let { p -> synchronized(p) { p.doubles.values.sumOf { it.size } + p.ints.values.sumOf { it.size } } }
+
+    /** Buffers retained by every thread's pool. */
+    fun retainedAll(): Int = synchronized(registry) { registry.toList() }.sumOf { p -> synchronized(p) { p.doubles.values.sumOf { it.size } + p.ints.values.sumOf { it.size } } }
+
+    /** Releases the retained buffers of every thread (e.g. when the owning screen is destroyed). */
+    fun clearAll() {
+        for (p in synchronized(registry) { registry.toList() }) synchronized(p) { p.doubles.clear(); p.ints.clear() }
+    }
 }

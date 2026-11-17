@@ -75,7 +75,8 @@ data class HandScript(
     val preflop: PreflopAction,
     val heroSeat: Seat,
     val heroHand: String,
-    val flop: String,
+    /** Null = the flop is not dealt yet (preflop-only analysis). */
+    val flop: String?,
     val turn: String? = null,
     val river: String? = null,
     val flopAction: StreetScript? = null,
@@ -88,6 +89,8 @@ data class HandScript(
         require(stackBb.isFinite() && stackBb > 0) { "Stack must be > 0" }
         require(heroSeat != Seat.THIRD || preflop.third != null) { "THIRD seat needs a 3-way line" }
         require(preflop.line != PreflopLine.ISO_RAISE_CALL || heroSeat == Seat.OPENER) { "ISO_RAISE_CALL: hero is the isolating player" }
-        require(flop.length == 6 && (turn == null || turn.length == 2) && (river == null || river.length == 2)) { "Board cards as 'AsKd7c', 'Th', '2c'" }
+        require((flop == null || flop.length == 6) && (turn == null || turn.length == 2) && (river == null || river.length == 2)) { "Board cards as 'AsKd7c', 'Th', '2c'" }
+        require(flop != null || (turn == null && river == null)) { "Turn / river need a flop" }
+        require(turn != null || river == null) { "River needs a turn" }
     }
 }
