@@ -43,12 +43,18 @@ object TurnToRiverRangeFilter {
     private fun conditional(branch: FloatArray, prior: FloatArray): FloatArray =
         FloatArray(Combos.COUNT) { k -> if (prior[k] <= 0f) 0f else (branch[k] / prior[k]).coerceIn(0f, 1f) }
 
-    fun fromTurn(turnSpot: TurnSpot, turnCtx: TurnContext, line: RiverLine, river: Int): RiverRanges {
+    fun fromTurn(
+        turnSpot: TurnSpot, turnCtx: TurnContext, line: RiverLine, river: Int,
+        /** Bet actually made (bb) when it differs from the solved size; hero's P(bet | c) stays the solved strategy. */
+        betSizeBb: Double? = null,
+        /** Already-built session of [turnSpot] (its 46-river matrix is reused). */
+        session: TurnSession? = null,
+    ): RiverRanges {
         require(river !in turnSpot.board) { "River card is on the turn board" }
         require((line == RiverLine.MULTIWAY_3WAY) == (turnSpot.extraRange != null)) { "MULTIWAY_3WAY requires a 3-way turn spot (and only it)" }
-        val session = TurnSession(turnSpot, turnCtx.policy)
-        val a = session.analyze(turnCtx)
-        val m = session.math(turnCtx)
+        val ses = session?.also { require(it.spot === turnSpot) { "Session of another spot" } } ?: TurnSession(turnSpot, turnCtx.policy)
+        val a = ses.analyze(turnCtx)
+        val m = ses.math(turnCtx)
         val dead = Combos.mask(turnSpot.board)
         val pot = turnSpot.potBb
         val stack = turnSpot.effectiveStackBb
@@ -66,7 +72,7 @@ object TurnToRiverRangeFilter {
             }
             RiverLine.BARREL_CALL, RiverLine.MULTIWAY_3WAY -> {
                 if (heroBets) {
-                    val b = requireNotNull(a.betSizeBb) { "No turn bet available (stack 0)" }
+                    val b = betSizeBb?.let { minOf(it, stack) } ?: requireNotNull(a.betSizeBb) { "No turn bet available (stack 0)" }
                     val resp = m.villainModel.respondToBet(facing, pot, b)
                     val xp = if (line == RiverLine.MULTIWAY_3WAY) conditional(m.extraModel!!.respondToBet(m.extraNodeRange!!, pot, b).call, m.extra!!) else null
                     return ranges(heroFreq(a.betAction!!), conditional(resp.call, m.villain), xp, pot + b * (2 + if (xp != null) 1 else 0), b, heroAgg = true)
@@ -82,7 +88,7 @@ object TurnToRiverRangeFilter {
                     val to = m.raiseTo(bet, pot + bet)
                     return ranges(heroFreq(TurnAction.RAISE), conditional(m.villainModel.respondToRaise(betRange).call, m.villain), null, pot + 2 * to, to, heroAgg = true)
                 }
-                val b = requireNotNull(a.betSizeBb) { "No turn bet available (stack 0)" }
+                val b = betSizeBb?.let { minOf(it, stack) } ?: requireNotNull(a.betSizeBb) { "No turn bet available (stack 0)" }
                 val resp = m.villainModel.respondToBet(facing, pot, b)
                 val y = m.raiseTo(b, pot + b)
                 val bet = heroFreq(a.betAction!!)

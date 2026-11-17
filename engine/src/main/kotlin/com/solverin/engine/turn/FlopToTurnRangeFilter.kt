@@ -57,12 +57,18 @@ object FlopToTurnRangeFilter {
      * Solves the flop spot with [flopCtx] and filters both ranges through [line] for [turnCard].
      * Hero's position is kept; who holds the initiative on the turn follows the line.
      */
-    fun fromFlop(flopSpot: FlopSpot, flopCtx: FlopContext, line: FlopLine, turnCard: Int, stride: Int = FlopEquity.FAST_STRIDE): TurnRanges {
+    fun fromFlop(
+        flopSpot: FlopSpot, flopCtx: FlopContext, line: FlopLine, turnCard: Int, stride: Int = FlopEquity.FAST_STRIDE,
+        /** Bet actually made (bb) when it differs from the solved size; hero's P(bet | c) stays the solved strategy. */
+        betSizeBb: Double? = null,
+        /** Already-built session of [flopSpot] (its equity matrix is reused). */
+        session: FlopSession? = null,
+    ): TurnRanges {
         require(turnCard !in flopSpot.board) { "Turn card is on the flop" }
         require((line == FlopLine.MULTIWAY_3WAY) == (flopSpot.extraRange != null)) { "MULTIWAY_3WAY requires a 3-way flop spot (and only it)" }
-        val session = FlopSession(flopSpot, stride)
-        val a = session.analyze(flopCtx)
-        val m = FlopMathEngine(flopSpot, flopCtx, session.matrix, null, session.extraMatrix)
+        val ses = session?.also { require(it.spot === flopSpot) { "Session of another spot" } } ?: FlopSession(flopSpot, stride)
+        val a = ses.analyze(flopCtx)
+        val m = FlopMathEngine(flopSpot, flopCtx, ses.matrix, null, ses.extraMatrix)
         val dead = Combos.mask(flopSpot.board)
         val pot = flopSpot.potBb
         val stack = flopSpot.effectiveStackBb
@@ -80,7 +86,7 @@ object FlopToTurnRangeFilter {
             }
             FlopLine.BET_CALL, FlopLine.MULTIWAY_3WAY -> {
                 if (heroBets) {
-                    val b = requireNotNull(a.betSizeBb) { "No flop bet available (stack 0)" }
+                    val b = betSizeBb?.let { minOf(it, stack) } ?: requireNotNull(a.betSizeBb) { "No flop bet available (stack 0)" }
                     val action = a.actions.first { it == FlopAction.BET || it == FlopAction.DONK }
                     val donk = flopSpot.nodeType == FlopNodeType.FIRST_TO_ACT && !flopSpot.heroIsAggressor
                     val facing = if (flopSpot.nodeType == FlopNodeType.FIRST_TO_ACT) m.villain else m.villainFirstAction.fold
@@ -105,7 +111,7 @@ object FlopToTurnRangeFilter {
                     return ranges(heroFreq(FlopAction.RAISE), conditional(called, m.villain), null, pot + 2 * to, to, heroAgg = true)
                 }
                 // Hero bet, villain raised, hero called the raise.
-                val b = requireNotNull(a.betSizeBb) { "No flop bet available (stack 0)" }
+                val b = betSizeBb?.let { minOf(it, stack) } ?: requireNotNull(a.betSizeBb) { "No flop bet available (stack 0)" }
                 val action = a.actions.first { it == FlopAction.BET || it == FlopAction.DONK }
                 val donk = flopSpot.nodeType == FlopNodeType.FIRST_TO_ACT && !flopSpot.heroIsAggressor
                 val facing = if (flopSpot.nodeType == FlopNodeType.FIRST_TO_ACT) m.villain else m.villainFirstAction.fold

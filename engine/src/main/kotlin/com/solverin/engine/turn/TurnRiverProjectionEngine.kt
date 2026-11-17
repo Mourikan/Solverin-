@@ -168,11 +168,13 @@ class TurnRiverProjectionEngine(
         val w = FloatArray(nv) { range[villainIdx[it]] }
         val eqTurn = FloatArray(Combos.COUNT); val clean = IntArray(Combos.COUNT); val dirty = IntArray(Combos.COUNT)
         val trapped = FloatArray(Combos.COUNT); val cleanEq = FloatArray(Combos.COUNT); val vOuts = IntArray(Combos.COUNT)
+        // Scratch buffers reused across hero combos (no per-combo allocation on mobile).
+        val shares = DoubleArray(nr)
+        val dominated = DoubleArray(nr)
         for (a in 0 until nh) {
             val h = heroIdx[a]
             var tw = 0.0; var td = 0.0
-            val shares = DoubleArray(nr) { -1.0 }
-            val dominated = DoubleArray(nr)
+            shares.fill(-1.0); dominated.fill(0.0)
             for (ri in 0 until nr) {
                 val x = hRiver[a * nr + ri]
                 if (x < 0) continue

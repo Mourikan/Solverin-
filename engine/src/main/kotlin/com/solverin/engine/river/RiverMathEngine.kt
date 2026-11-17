@@ -30,10 +30,10 @@ class RiverMathEngine(
         val villain = FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) spot.villainRange[it] else 0f }
         val extra: FloatArray? = spot.extraRange?.let { x -> FloatArray(Combos.COUNT) { if (Combos.isLive(it, dead)) x[it] else 0f } }
         val impact = RiverCardImpactEngine.classify(spot.turnBoard, spot.riverCard)
+        /** Turn draw outs of every live combo. */
+        val turnOuts = IntArray(Combos.COUNT) { k -> if (Combos.isLive(k, dead)) Draws.outs(spot.turnBoard, k) else 0 }
         /** Turn draws (≥ 4 outs) that end with at most one pair: villain's natural river bluffs. */
-        val missedDraw = BooleanArray(Combos.COUNT) { k ->
-            Combos.isLive(k, dead) && showdown.category(k) <= 1 && Draws.outs(spot.turnBoard, k) >= 4
-        }
+        val missedDraw = BooleanArray(Combos.COUNT) { k -> Combos.isLive(k, dead) && showdown.category(k) <= 1 && turnOuts[k] >= 4 }
         val heroIdx = (0 until Combos.COUNT).filter { hero[it] > 0f }.toIntArray()
         val villainVsHero: FloatArray = showdown.equities(villain, hero)
         val heroVsVillain: FloatArray = showdown.equities(hero, villain)
@@ -143,7 +143,8 @@ class RiverMathEngine(
         } else villainOrder
         fill(rem, value, total * f * vs, valueOrder)
         val weakest = villainOrder.reversed()
-        val missed = weakest.filter { s.missedDraw[it] } + weakest.filter { !s.missedDraw[it] }
+        // Natural bluffs: the biggest missed draws first (busted flush draws, then straight draws), then air.
+        val missed = weakest.filter { s.missedDraw[it] }.sortedByDescending { s.turnOuts[it] } + weakest.filter { !s.missedDraw[it] }
         val nonValue = total * f * (1 - vs)
         if (size <= p.weakDonkSize) {
             val weakMade = weakest.filter { s.showdown.category(it) >= 1 }
@@ -194,7 +195,13 @@ class RiverMathEngine(
     fun defenseShare(size: Double, bNut: Double = 1.0, bFold: Double = 1.0): Double {
         val mdf = 1 / (1 + size)
         val elasticity = (1 - villainFold(size)) / mdf * elasticityRatio
-        var d = (mdf * elasticity * (bNut / bFold).coerceIn(0.5, 2.0)).coerceIn(0.05, 0.98)
+        // B_nut / B_fold with degenerate removal guarded (hero blocking a whole sub-range must not produce 0 / 0).
+        val ratio = when {
+            bFold <= 0.0 && bNut <= 0.0 -> 1.0
+            bFold <= 0.0 -> 2.0
+            else -> (bNut / bFold).let { if (it.isNaN()) 1.0 else it }
+        }
+        var d = (mdf * elasticity * ratio.coerceIn(0.5, 2.0)).coerceIn(0.05, 0.98)
         if (size <= p.minBetRatio) d = maxOf(d, 1 - prof.microBetMaxFold)
         return d
     }
@@ -209,6 +216,10 @@ class RiverMathEngine(
         val raiseValueShare: Double, val defense: Double, val bNut: Double, val bFold: Double,
     )
 
+    /** Scratch buffers of [responseOf] (reset after each call; no per-call allocation). */
+    private val usedScratch = DoubleArray(Combos.COUNT)
+    private val touchedIdx = IntArray(2 * Combos.COUNT)
+
     private fun responseOf(h: Int, range: FloatArray, idx: IntArray, size: Double, raiseFrac: Double, raiseValue: Double, blk: RiverBlockerEngine): Response {
         val m = Combos.MASK[h]; val sh = s.showdown.strength[h]
         var live = 0.0
@@ -221,23 +232,25 @@ class RiverMathEngine(
         var callLeft = (def - r) * live
         var brLeft = r * (1 - raiseValue) * live
         var cw = 0.0; var cn = 0.0; var rw = 0.0; var rn = 0.0; var vw = 0.0; var vn = 0.0
-        val used = HashMap<Int, Double>()
+        val used = usedScratch
+        var touched = 0
         fun res(b: Int): Double { val t = s.showdown.strength[b]; return if (sh > t) 1.0 else if (sh == t) 0.5 else 0.0 }
         for (b in idx) {
             if (m and Combos.MASK[b] != 0L) continue
             var avail = range[b].toDouble()
-            if (vrLeft > 1e-12) { val t = minOf(avail, vrLeft); vrLeft -= t; avail -= t; rw += t; rn += t * res(b); vw += t; vn += t * res(b); used[b] = t }
-            if (avail > 1e-12 && callLeft > 1e-12) { val t = minOf(avail, callLeft); callLeft -= t; avail -= t; cw += t; cn += t * res(b); used[b] = (used[b] ?: 0.0) + t }
+            if (vrLeft > 1e-12) { val t = minOf(avail, vrLeft); vrLeft -= t; avail -= t; rw += t; rn += t * res(b); vw += t; vn += t * res(b); used[b] += t; touchedIdx[touched++] = b }
+            if (avail > 1e-12 && callLeft > 1e-12) { val t = minOf(avail, callLeft); callLeft -= t; avail -= t; cw += t; cn += t * res(b); used[b] += t; touchedIdx[touched++] = b }
             if (vrLeft <= 1e-12 && callLeft <= 1e-12) break
         }
         for (i in idx.indices.reversed()) {
             if (brLeft <= 1e-12) break
             val b = idx[i]
             if (m and Combos.MASK[b] != 0L) continue
-            val avail = range[b] - (used[b] ?: 0.0)
+            val avail = range[b] - used[b]
             if (avail <= 1e-12) continue
             val t = minOf(avail, brLeft); brLeft -= t; rw += t; rn += t * res(b)
         }
+        for (i in 0 until touched) used[touchedIdx[i]] = 0.0
         val pc = cw / live; val pr = rw / live
         val eqC = if (cw > 0) (cn / cw).toFloat() else 0.5f
         val eqR = if (rw > 0) (rn / rw).toFloat() else 0.5f
@@ -401,7 +414,7 @@ class RiverMathEngine(
         val order = s.showdown.order(x).toList()
         fill(rem, value, total * prof.stab * prof.betValueShare, order)
         val weakest = order.reversed()
-        fill(rem, bluff, total * prof.stab * (1 - prof.betValueShare), weakest.filter { s.missedDraw[it] } + weakest.filter { !s.missedDraw[it] })
+        fill(rem, bluff, total * prof.stab * (1 - prof.betValueShare), weakest.filter { s.missedDraw[it] }.sortedByDescending { s.turnOuts[it] } + weakest.filter { !s.missedDraw[it] })
         for (k in 0 until Combos.COUNT) bet[k] = value[k] + bluff[k]
         BetPartition(bet, rem, value, bluff)
     }
