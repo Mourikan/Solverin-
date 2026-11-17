@@ -85,6 +85,24 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
         }
     }
 
+    /**
+     * Strict MDF vs min-bets: if the range folds more than [maxFold], the folded hands with the highest call EV
+     * are turned into calls until the range folds exactly [maxFold].
+     */
+    private fun enforceMdf(heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, callEv: (Int) -> Double) {
+        var total = 0.0; var folded = 0.0
+        for (h in heroIdx) { total += w[h]; folded += w[h] * fold[h] }
+        var excess = folded - maxFold * total
+        if (total <= 0.0 || excess <= 1e-12) return
+        for (h in heroIdx.filter { fold[it] > 0f }.sortedByDescending(callEv)) {
+            if (excess <= 1e-12) break
+            val cut = minOf(fold[h].toDouble() * w[h], excess)
+            val moved = minOf(fold[h], (cut / w[h]).toFloat())
+            fold[h] -= moved; call[h] += moved
+            excess -= cut
+        }
+    }
+
     private class SizeResult(
         val size: Double, val bet: Double, val total: Double, val bets: Array<FlopEvTerms?>,
         val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray,
@@ -131,10 +149,12 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                 foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
             )
         }
+        val mdf = pot / (pot + bet)
+        if (minBet) enforceMdf(heroIdx, m.hero, 1 - mdf, fFold, fCall) { call[it]!!.ev }
         return FlopAnalysis(
             spot, m.flopId, m.texture, FlopNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage,
             m.heroVsVillain.rangeEquity(m.hero), null, null,
-            mdf = pot / (pot + bet), potOdds = potOdds, minBet = minBet, donkRead = if (spot.isDonk) m.donkRead else null,
+            mdf = mdf, potOdds = potOdds, minBet = minBet, donkRead = if (spot.isDonk) m.donkRead else null,
             freq = mapOf(FlopAction.FOLD to fFold, FlopAction.CALL to fCall, FlopAction.RAISE to fRaise),
             terms = mapOf(FlopAction.CALL to call, FlopAction.RAISE to raise), heroRange = m.hero, capped = capped,
         )

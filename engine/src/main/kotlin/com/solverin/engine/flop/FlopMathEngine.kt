@@ -214,11 +214,33 @@ class FlopMathEngine(
         )
     }
 
-    private fun vsReraise(h: Int, potAfterHero: Double, x: Double, vInv: Double, a: Double, raiseRange: FloatArray, level: Int): Double {
+    /**
+     * Hero's decision after villain re-raises hero's street total [x] (hero added [a] this action):
+     * fold (−a), call the re-raise (valued all-in when it leaves < commitSpr × pot behind) or, at level 1, jam.
+     */
+    class ReraiseResponse(
+        val reraiseTo: Double,
+        val toCall: Double,
+        val call: Branch,
+        val jamEv: Double,
+        val invested: Double,
+    ) {
+        val callEv: Double get() = call.value
+        val best: FlopAction get() = when {
+            maxOf(callEv, jamEv) <= 0.0 -> FlopAction.FOLD
+            jamEv > callEv -> FlopAction.RAISE
+            else -> FlopAction.CALL
+        }
+        /** Hero continues by committing the whole stack (all-in call or jam). */
+        val stacksOff: Boolean get() = best == FlopAction.RAISE || (best == FlopAction.CALL && call.allIn)
+        val value: Double get() = -invested + maxOf(0.0, callEv, jamEv)
+    }
+
+    fun reraiseResponse(h: Int, potAfterHero: Double, x: Double, vInv: Double, a: Double, raiseRange: FloatArray, level: Int): ReraiseResponse {
         val y = raiseTo(x, potAfterHero)
         val potR = potAfterHero + (y - vInv)
         val toCall = y - x
-        val callEv = called(h, raiseRange, potR + toCall, toCall, stack - y, aggressor = false).value
+        val callBranch = called(h, raiseRange, potR + toCall, toCall, stack - y, aggressor = false)
         var jamEv = Double.NEGATIVE_INFINITY
         if (level == 1 && y < stack) {
             val jr = villainModel.respondToJam(raiseRange)
@@ -228,8 +250,18 @@ class FlopMathEngine(
             val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, fin, 0.0, ej)
             jamEv = pr[0] * potR + (pr[1] + pr[2]) * (ej * fin - (stack - x) - rk)
         }
-        return -a + maxOf(0.0, callEv, jamEv)
+        return ReraiseResponse(y, toCall, callBranch, jamEv, a)
     }
+
+    /** Hero bets / raises to [raiseTo] into [resp]; returns hero's response to villain's re-raise. */
+    fun reraiseResponse(h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int): ReraiseResponse {
+        val x = minOf(raiseTo, stack)
+        val a = x - heroInv
+        return reraiseResponse(h, potBefore + a, x, vInv, a, resp.raise, level)
+    }
+
+    private fun vsReraise(h: Int, potAfterHero: Double, x: Double, vInv: Double, a: Double, raiseRange: FloatArray, level: Int): Double =
+        reraiseResponse(h, potAfterHero, x, vInv, a, raiseRange, level).value
 
     /** Hero calls a bet: [potBefore] includes the bet, [toCall] = chips hero adds. */
     fun call(h: Int, potBefore: Double, toCall: Double, betRange: FloatArray): FlopEvTerms {

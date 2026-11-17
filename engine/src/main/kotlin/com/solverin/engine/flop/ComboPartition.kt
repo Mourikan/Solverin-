@@ -19,6 +19,9 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
     }
 
     companion object {
+        /** Max extra share of the range a proportional tier may extend beyond its budget. */
+        const val TIER_SLACK = 0.10
+
         /**
          * Splits [prior] by weight fractions: value raises from the top of [byStrength], calls next,
          * bluff raises ((1 − valueShare) of raises) from the remaining pool by [byBluff].
@@ -61,11 +64,16 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
             return ComboPartition(bet, FloatArray(Combos.COUNT), rem)
         }
 
-        /** Takes [budget] proportionally from the first [tierMultiplier] × budget of [order]. */
+        /**
+         * Takes [budget] proportionally from the first min(tierMultiplier × budget, budget + TIER_SLACK × range)
+         * of [order]: small bet ranges mix (no capping), large value-heavy ranges stay concentrated at the top.
+         */
         private fun proportional(rem: FloatArray, dst: FloatArray, budget: Double, order: IntArray, tierMultiplier: Double) {
             if (budget <= 0.0) return
             val tier = FloatArray(Combos.COUNT)
-            fill(rem.copyOf(), tier, minOf(Combos.total(rem), budget * tierMultiplier), order)
+            val available = Combos.total(rem)
+            val tierBudget = minOf(available, budget * tierMultiplier, budget + TIER_SLACK * available)
+            fill(rem.copyOf(), tier, tierBudget, order)
             val tierTotal = Combos.total(tier)
             if (tierTotal <= 0.0) return
             val share = (budget / tierTotal).coerceAtMost(1.0).toFloat()
