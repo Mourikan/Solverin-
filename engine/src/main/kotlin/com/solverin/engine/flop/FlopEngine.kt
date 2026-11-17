@@ -33,11 +33,14 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
     init {
         require(shared.hero.any { it > 0f }) { "Hero range is empty on this board" }
         require(shared.villain.any { it > 0f }) { "Villain range is empty on this board" }
+        require(shared.extra == null || shared.extra.any { it > 0f }) { "Extra range is empty on this board" }
     }
     val matrix: FlopEquityMatrix by lazy { FlopEquityMatrix(spot.board, shared.hero, shared.villain, stride) }
+    /** Hero × third-player matrix for 3-way pots. */
+    val extraMatrix: FlopEquityMatrix? by lazy { shared.extra?.let { FlopEquityMatrix(spot.board, shared.hero, it, stride) } }
 
     fun analyze(ctx: FlopContext): FlopAnalysis {
-        val m = FlopMathEngine(spot, ctx, matrix, shared)
+        val m = FlopMathEngine(spot, ctx, matrix, shared, extraMatrix)
         val p = ctx.policy
         val pot = spot.potBb
         val heroIdx = (0 until Combos.COUNT).filter { m.hero[it] > 0f }
@@ -69,15 +72,17 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                 for (size in sizes) {
                     val b = minOf(size * pot, spot.effectiveStackBb)
                     val resp = m.villainModel.respondToBet(facingRange, pot, b, respNode)
+                    val xResp = m.extraModel?.respondToBet(m.extraNodeRange!!, pot, b)
                     val bets = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
                     val fc = FloatArray(Combos.COUNT); val fb = FloatArray(Combos.COUNT)
                     for (h in heroIdx) {
-                        val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1)
+                        val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                         bets[h] = t
                         val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, t.ev, p.mixBandBb)
                         fc[h] = mix[1]; fb[h] = mix[2]
                     }
-                    val ratio = FlopBluffCap.ratio(false, b / pot, resp.foldTotal / resp.priorTotal, m.villainModel.mdf(pot, b),
+                    val foldAll = resp.foldTotal / resp.priorTotal * (xResp?.let { it.foldTotal / it.priorTotal } ?: 1.0)
+                    val ratio = FlopBluffCap.ratio(false, b / pot, foldAll, m.villainModel.mdf(pot, b),
                         locked = ctx.locks[respNode]?.fold != null)
                     val capped = FlopBluffCap.apply(
                         heroIdx, m.hero, ratio, fb, fc, null,
@@ -166,13 +171,20 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             )
         }
         val mdf = pot / (pot + bet)
-        if (minBet) enforceMdf(heroIdx, m.hero, 1 - mdf, fFold, fCall) { call[it]!!.ev }
+        val donkRead = if (spot.isDonk) m.donkRead else null
+        val mdfFloor = when {
+            minBet -> 1 - mdf
+            donkRead?.type == DonkType.WEAKNESS -> minOf(1.0, 1 - mdf + p.weakDonkMdfSlack)
+            else -> null
+        }
+        if (mdfFloor != null) enforceMdf(heroIdx, m.hero, mdfFloor, fFold, fCall) { call[it]!!.ev }
         return FlopAnalysis(
             spot, m.flopId, m.texture, FlopNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage,
             m.heroVsVillain.rangeEquity(m.hero), null, null,
-            mdf = mdf, potOdds = potOdds, minBet = minBet, donkRead = if (spot.isDonk) m.donkRead else null,
+            mdf = mdf, potOdds = potOdds, minBet = minBet, donkRead = donkRead,
             freq = mapOf(FlopAction.FOLD to fFold, FlopAction.CALL to fCall, FlopAction.RAISE to fRaise),
             terms = mapOf(FlopAction.CALL to call, FlopAction.RAISE to raise), heroRange = m.hero, capped = capped,
+            maxFold = mdfFloor,
         )
     }
 }
@@ -207,6 +219,8 @@ class FlopAnalysis(
     val elasticity: Double = Double.NaN,
     /** Geometric size to get stacks in by the river. */
     val geometricSize: Double = Double.NaN,
+    /** Enforced maximum fold frequency (strict MDF vs min-bets / weakness donks); null = pure max EV. */
+    val maxFold: Double? = null,
 ) {
     fun capped(combo: Int): Boolean = capped[combo]
 

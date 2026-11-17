@@ -52,6 +52,7 @@ object FlopInvariants {
         for (act in a.actions) assertTrue(a.frequency(act).isFinite(), "$act aggregate frequency")
         assertTrue(a.rangeEv().isFinite())
         if (a.minBet) assertTrue(a.frequency(FlopAction.FOLD) <= 1 - a.mdf!! + 1e-6, "min-bet fold ${a.frequency(FlopAction.FOLD)} > 1 - MDF")
+        a.maxFold?.let { assertTrue(a.frequency(FlopAction.FOLD) <= it + 1e-6, "fold ${a.frequency(FlopAction.FOLD)} above enforced $it") }
         if (a.nodeType == FlopNodeType.VS_BET && !a.spot.heroInPosition)
             assertTrue(a.frequency(FlopAction.RAISE) <= maxOf(policy.checkRaiseCap, policy.checkRaiseCapConnected) + 0.005,
                 "OOP raise ${a.frequency(FlopAction.RAISE)} above cap")
@@ -65,7 +66,8 @@ object FlopInvariants {
         val aggressiveBest = bestAct == FlopAction.BET || bestAct == FlopAction.RAISE || bestAct == FlopAction.DONK
         val capped = aggressiveBest && a.capped(k)
         for ((act, ev) in evs) if (a.frequency(act, k) > 0f)
-            assertTrue(ev >= best - BAND - 1e-9 || capped || (a.minBet && act != FlopAction.FOLD), "$name plays $act below max EV")
+            assertTrue(ev >= best - BAND - 1e-9 || capped || ((a.minBet || a.maxFold != null) && act != FlopAction.FOLD),
+                "$name plays $act below max EV")
     }
 
     /** Hero-range share of combos whose fold frequency is 1. */

@@ -30,6 +30,11 @@ class FlopSpot(
     val potBb: Double,
     val effectiveStackBb: Double,
     val facingBetBb: Double = 0.0,
+    /**
+     * Optional third player (3-way pot). He acts after hero when hero is first to act or facing a bet
+     * (sandwich), and has already checked when hero is in position after a check.
+     */
+    val extraRange: FloatArray? = null,
 ) {
     init {
         require(board.size == 3 && board.toSet().size == 3 && board.all { it in 0..51 }) { "Invalid flop" }
@@ -39,7 +44,13 @@ class FlopSpot(
         require(potBb.isFinite() && potBb > 0) { "Pot must be > 0" }
         require(effectiveStackBb.isFinite() && effectiveStackBb >= 0) { "Stack must be >= 0" }
         require(facingBetBb.isFinite() && facingBetBb >= 0) { "Facing bet must be >= 0" }
+        extraRange?.let { x ->
+            require(x.size == Combos.COUNT) { "Extra range must have ${Combos.COUNT} combos" }
+            require(x.all { it.isFinite() && it in 0f..1f }) { "Extra combo weights must be finite and in [0, 1]" }
+        }
     }
+
+    val multiway: Boolean get() = extraRange != null
 
     val nodeType: FlopNodeType get() = when {
         facingBetBb > 0.0 -> FlopNodeType.VS_BET
@@ -86,6 +97,8 @@ data class FlopPolicy(
      * bluff) is only chosen when it beats hero's best alternative (fold / call) by at least this many bb.
      */
     val stackOffBluffMarginBb: Double = 1.0,
+    /** Weakness-read donks: hero folds at most 1 − MDF + weakDonkMdfSlack (no automatic overfolds). */
+    val weakDonkMdfSlack: Double = 0.05,
     val mixBandBb: Double = 0.05,
     val nutFraction: Double = 0.03,
     /** Equity above which a combo counts as "nuts" for ΔNuts. */
