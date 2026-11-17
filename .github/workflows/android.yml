@@ -28,6 +28,9 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The default 'tools' package no longer exists in the SDK repository and makes the action fail.
+          packages: 'platform-tools'
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses > /dev/null
