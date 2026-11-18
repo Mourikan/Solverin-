@@ -404,4 +404,93 @@ class SolverViewModelTest {
         val heroIn = s.seats.first { it.isHero }
         if (heroIn.inHand && !s.heroFoldPending) assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
     }
+
+    private fun SolverViewModel.assign(prefix: String) {
+        val o = state.value.villainOptions.firstOrNull { it.label.startsWith(prefix) }
+            ?: error("No option '$prefix' for ${state.value.actingSeat} in ${state.value.villainOptions.map { it.label }}")
+        assignSeatAction(o)
+    }
+
+    @Test
+    fun matrixAssignmentFoldsSkippedSeatsByOmissionAndAdvancesToTheFlop() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ah", "Kd")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        // CO opens directly: UTG and MP fold implicitly.
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle()
+        var s = vm.state.value
+        assertEquals("CO", s.actingSeat)
+        assertTrue(s.seats.first { it.label == "CO" }.isMatrixSelected)
+        vm.assign("Open 2.5"); advanceUntilIdle()
+        s = vm.state.value
+        assertFalse(s.seats.first { it.label == "UTG" }.inHand)
+        assertFalse(s.seats.first { it.label == "MP" }.inHand)
+        assertEquals(listOf("P UTG fold", "P MP fold", "P CO raise 2.5bb"), s.history.take(3))
+        // Hero (BTN) Max EV auto-assumed right after the open.
+        assertOracle(s)
+        assertEquals(s.maxEvAction!!.key, s.heroCommittedKey)
+        assertEquals("SB", s.toAct)
+        // Hero flats in the real game, then the rest fold by omission.
+        vm.overrideHeroAction("CALL"); advanceUntilIdle()
+        assertTrue(vm.state.value.manualDeviation || vm.state.value.maxEvAction!!.key == "CALL")
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(3, s.cardsNeeded)
+        assertEquals(2.5 + 2.5 + 0.5 + 1.0, s.potBb, 1e-9)
+        assertEquals(listOf("CO", "BTN"), s.seats.filter { it.inHand }.map { it.label })
+        assertEquals(97.5, s.effectiveStackBb, 1e-9)
+        // Flop unlocks and the pipeline sees the exact RFI_CALL line CO vs BTN.
+        pickCards(vm, "Kh", "8c", "4d")
+        s = vm.state.value
+        assertEquals(TableStreet.FLOP, s.street)
+        assertOracle(s)
+        assertTrue(s.nodeLabel, s.nodeLabel.contains("RFI CALL"))
+        assertFalse(s.approximate)
+    }
+
+    @Test
+    fun advanceAutoResolvesHeroOnTheWayAndDeviationReRunsTheImplicitFolds() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Qs", "Qh")
+        vm.setHeroPosition(Position.BB); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()           // UTG (seat to act, no selection needed)
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        var s = vm.state.value
+        for (p in listOf("MP", "CO", "BTN", "SB")) assertFalse(p, s.seats.first { it.label == p }.inHand)
+        assertNotNull(s.heroCommittedKey)
+        assertTrue(s.heroOverridable)
+        assertTrue(s.phase == StreetFlowPhase.DEAL_BOARD_CARDS || s.phase == StreetFlowPhase.HAND_COMPLETE)
+        // Hero actually just called: the street closes heads-up UTG vs BB.
+        vm.overrideHeroAction("CALL"); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(listOf("UTG", "BB"), s.seats.filter { it.inHand }.map { it.label })
+        assertEquals(2.5 + 2.5 + 0.5, s.potBb, 1e-9)
+    }
+
+    @Test
+    fun matrixMultiRaiseOpenThreeBetFourBetCall() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ac", "Ad")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()            // UTG open
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle() // MP folds by omission
+        vm.assign("3-Bet IP"); advanceUntilIdle()            // CO 3-bet 7.5
+        var s = vm.state.value
+        assertOracle(s)
+        if (s.heroCommittedKey != "RAISE") { vm.overrideHeroAction("RAISE"); advanceUntilIdle() }
+        s = vm.state.value
+        val heroTo = s.seats.first { it.isHero }.investBb
+        assertTrue(heroTo > 7.5)
+        // CO calls the 4-bet; SB, BB and UTG fold by omission.
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle()
+        assertEquals("CO", vm.state.value.actingSeat)
+        vm.assign("Call"); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(listOf("CO", "BTN"), s.seats.filter { it.inHand }.map { it.label })
+        assertEquals(0.5 + 1.0 + 2.5 + 2 * heroTo, s.potBb, 1e-9)
+        assertTrue(s.history.any { it == "P UTG fold" } && s.history.any { it == "P SB fold" } && s.history.any { it == "P BB fold" })
+    }
 }

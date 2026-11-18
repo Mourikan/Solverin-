@@ -1,8 +1,10 @@
 package com.solverin.app.presentation
 
+import androidx.compose.runtime.Immutable
 import com.solverin.engine.core.Stake
 
 /** One hero option of the oracle: Nash frequency, exact EV (bb), EV lost vs the optimum and its table action. */
+@Immutable
 data class ActionOption(
     val key: String,
     val label: String,
@@ -15,7 +17,8 @@ data class ActionOption(
     val toAmountBb: Double,
 )
 
-/** One seat of the compact 6-max table. */
+/** One seat of the hand (strip chips and preflop matrix cards). */
+@Immutable
 data class SeatView(
     val label: String,
     val position: com.solverin.engine.core.Position,
@@ -29,9 +32,16 @@ data class SeatView(
     val isHero: Boolean,
     val isToAct: Boolean,
     val isSelected: Boolean,
+    /** Registered an explicit action on the current street. */
+    val actedThisStreet: Boolean = false,
+    /** Villain that can still be assigned an action on this street (matrix). */
+    val canAct: Boolean = false,
+    /** Seat whose action buttons the matrix currently shows. */
+    val isMatrixSelected: Boolean = false,
 )
 
 /** Immutable UI state of the live hand (single source of truth for the Compose screen). */
+@Immutable
 data class HandViewState(
     val stake: Stake = Stake.NL50,
     val profile: VillainProfilePreset = VillainProfilePreset.POPULATION,
@@ -44,6 +54,10 @@ data class HandViewState(
     val boardIds: List<Int> = emptyList(),
     val seats: List<SeatView> = emptyList(),
     val toAct: String? = null,
+    /** Villain seat whose action buttons are shown (matrix selection or the seat to act). */
+    val actingSeat: String? = null,
+    /** "✓ Avanzar al Flop (Resto Fold)" available. */
+    val canAdvancePreflop: Boolean = false,
     val potBb: Double = 0.0,
     val effectiveStackBb: Double = 100.0,
     val spr: Double = Double.POSITIVE_INFINITY,

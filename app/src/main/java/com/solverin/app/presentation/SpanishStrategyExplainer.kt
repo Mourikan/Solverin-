@@ -4,6 +4,7 @@ import com.solverin.engine.core.Stake
 import java.util.Locale
 
 /** Hold-to-explain overlay content: a title and 3–4 tactical points built from the solved node's numbers. */
+@androidx.compose.runtime.Immutable
 data class StrategyExplanation(val title: String, val points: List<String>)
 
 /**

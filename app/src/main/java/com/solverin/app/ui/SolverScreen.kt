@@ -38,11 +38,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.solverin.app.presentation.HandViewState
 import com.solverin.app.presentation.SolverViewModel
 import com.solverin.app.presentation.StreetFlowPhase
+import com.solverin.app.presentation.TableStreet
 import com.solverin.engine.core.Position
 
-private enum class Zone3 { CARDS, POSITION, STEPPER, COMPLETE }
+private enum class Zone3 { CARDS, MATRIX, STEPPER, COMPLETE }
 
-/** Zero-scroll portrait screen: tactical bar 9% · oracle 25% · table 20% · sequential input zone 46%, modal overlays on top. */
+/** Zero-scroll portrait screen: tactical bar 9% · oracle 25% · street/board strip 13% · input zone 53%, modal overlays on top. */
 @Composable
 fun SolverScreen(vm: SolverViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -55,14 +56,15 @@ fun SolverScreen(vm: SolverViewModel) {
                 state, onHold = { explaining = it && state.explanation != null }, onDeviation = { overlay = TacticalOverlay.DEVIATION },
                 onSelect = vm::overrideHeroAction, modifier = Modifier.fillMaxWidth().weight(0.25f),
             )
-            CompactTable6Max(state, vm::editHeroCard, vm::editBoardCard, onSeatTap = { vm.selectSeat(it); overlay = TacticalOverlay.STACK },
-                modifier = Modifier.fillMaxWidth().weight(0.20f))
-            Box(Modifier.fillMaxWidth().weight(0.46f)) {
+            CompactStreetAndBoardStrip(state, vm::editHeroCard, vm::editBoardCard, onSeatTap = { vm.selectSeat(it); overlay = TacticalOverlay.STACK },
+                modifier = Modifier.fillMaxWidth().weight(0.13f))
+            Box(Modifier.fillMaxWidth().weight(0.53f)) {
+                val preflop = state.street == TableStreet.PREFLOP
                 val zone = when {
-                    state.heroFoldPending -> Zone3.STEPPER
+                    state.heroFoldPending -> if (preflop) Zone3.MATRIX else Zone3.STEPPER
                     state.phase == StreetFlowPhase.PICK_HERO_CARDS || state.phase == StreetFlowPhase.DEAL_BOARD_CARDS -> Zone3.CARDS
-                    state.phase == StreetFlowPhase.PICK_HERO_POSITION -> Zone3.POSITION
-                    state.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER -> Zone3.STEPPER
+                    state.phase == StreetFlowPhase.PICK_HERO_POSITION -> Zone3.MATRIX
+                    state.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER -> if (preflop) Zone3.MATRIX else Zone3.STEPPER
                     else -> Zone3.COMPLETE
                 }
                 AnimatedContent(
@@ -74,7 +76,8 @@ fun SolverScreen(vm: SolverViewModel) {
                     val m = Modifier.fillMaxSize()
                     when (z) {
                         Zone3.CARDS -> TwoTapCardPicker(state, vm::pickRank, vm::pickSuit, vm::undo, m)
-                        Zone3.POSITION -> PositionPicker(state, vm::setHeroPosition, vm::undo, m)
+                        Zone3.MATRIX -> PreflopQuickMatrix(state, vm::setHeroPosition, vm::selectMatrixSeat, vm::assignSeatAction, vm::adjustCustom,
+                            vm::assignSeatCustom, vm::advancePreflopAssumingRemainingFold, vm::undo, m)
                         Zone3.STEPPER -> VillainActionStepper(state, vm::villainAct, vm::adjustCustom, vm::villainCustom, vm::undo,
                             onContinue = { vm.continueInHand() }, modifier = m)
                         Zone3.COMPLETE -> HandCompletePanel(state, vm::resetHand, vm::undo, m)
@@ -108,28 +111,6 @@ fun SolverScreen(vm: SolverViewModel) {
         }
         AnimatedVisibility(explaining, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
             state.explanation?.let { ExplainOverlay(it, Modifier.fillMaxWidth().padding(14.dp)) }
-        }
-    }
-}
-
-@Composable
-private fun PositionPicker(state: HandViewState, onPick: (Position) -> Unit, onUndo: () -> Unit, modifier: Modifier) {
-    CakePanel(modifier) {
-        Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth().height(34.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("POSICIÓN DEL HÉROE", color = CakeColors.Cyan, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                Text(state.heroCards.joinToString(" "), color = CakeColors.TextPrimary, fontFamily = Mono, fontWeight = FontWeight.Bold)
-                CakeButton("↩ Undo", CakeColors.Purple, Modifier.padding(start = 8.dp).width(84.dp).fillMaxHeight(), enabled = state.canUndo,
-                    textColor = CakeColors.TextPrimary, fontSize = 12.sp, onClick = onUndo)
-            }
-            for (row in Position.entries.chunked(3)) {
-                Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { p ->
-                        CakeButton(p.short, if (p.isBlind) CakeColors.Purple else CakeColors.Cyan, Modifier.weight(1f).fillMaxHeight(),
-                            textColor = if (p.isBlind) CakeColors.TextPrimary else CakeColors.Ink, fontSize = 26.sp) { onPick(p) }
-                    }
-                }
-            }
         }
     }
 }

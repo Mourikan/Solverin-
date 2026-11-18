@@ -33,6 +33,7 @@ data class ActionRecord(
 )
 
 /** A legal one-tap action for the player to act. */
+@androidx.compose.runtime.Immutable
 data class VillainOption(val label: String, val kind: ActKind, val toAmount: Double)
 
 /**
@@ -201,6 +202,47 @@ object StreetFlowStateMachine {
         val n = nextToAct(next, p)
         return if (n != null) next.copy(toAct = n) else closeStreet(next)
     }
+
+    /** Implicit pass of a villain that was not assigned an action: check when nothing is owed, otherwise fold. */
+    private fun implicitPass(s: FlowState): FlowState {
+        val p = requireNotNull(s.toAct)
+        return act(s, if (s.toCall(p) <= 1e-9) ActKind.CHECK else ActKind.FOLD)
+    }
+
+    /**
+     * Auto-fold by omission: every villain between the pointer and [target] passes (fold, or check when nothing is
+     * owed). Null when hero acts before [target], or [target] cannot act on this street.
+     */
+    fun foldUntil(s: FlowState, target: Position): FlowState? {
+        if (target == s.heroPosition) return null
+        var c = s
+        repeat(MAX_IMPLICIT_STEPS) {
+            if (c.phase != StreetFlowPhase.VILLAIN_ACTION_STEPPER) return null
+            val p = c.toAct ?: return null
+            if (p == target) return c
+            if (p == c.heroPosition) return null
+            c = implicitPass(c)
+        }
+        return null
+    }
+
+    /** Remaining villains pass by omission until it is hero's turn, the street closes or the hand ends. */
+    fun foldVillainsUntilHero(s: FlowState): FlowState {
+        var c = s
+        repeat(MAX_IMPLICIT_STEPS) {
+            if (c.phase != StreetFlowPhase.VILLAIN_ACTION_STEPPER) return c
+            val p = c.toAct ?: return c
+            if (p == c.heroPosition) return c
+            c = implicitPass(c)
+        }
+        return c
+    }
+
+    /** True when [p] is still to act on the current street (the matrix can assign it an action). */
+    fun canStillAct(s: FlowState, p: Position): Boolean =
+        s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER && needsAction(s, p)
+
+    private const val MAX_IMPLICIT_STEPS = 64
 
     private fun closeStreet(s: FlowState): FlowState {
         val pot = s.potBb

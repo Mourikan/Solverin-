@@ -45,6 +45,12 @@ class SolverViewModel(
     private var committedKey: String? = null
     private var result: OracleResult? = null
     private var selectedSeat: Position? = null
+    /** Seat chosen in the preflop quick matrix (null = the seat to act). */
+    private var matrixSeat: Position? = null
+    /** "Avanzar al flop": keep folding by omission once hero's assumed action is committed. */
+    private var autoAdvance = false
+    /** Implicit folds were chained after hero's assumed action (a deviation re-runs them). */
+    private var heroChain = false
     private var pickerRank: Int? = null
     private var customAmount = 2.0
     private var error: String? = null
@@ -103,6 +109,7 @@ class SolverViewModel(
         cancelCompute()
         flow = StreetFlowStateMachine.newHand(tableStack)
         undoStack.clear(); heroSnapshot = null; committedKey = null; result = null; pickerRank = null; error = null; selectedSeat = null
+        matrixSeat = null; autoAdvance = false; heroChain = false
         customAmount = 2.0
         publish()
     }
@@ -191,12 +198,66 @@ class SolverViewModel(
         publish()
     }
 
+    // ---- preflop quick matrix (auto-fold by omission) ----------------------------------------------------------
+
+    /**
+     * Selects a seat of the matrix. Seats before hero's turn are reached by implicit folds; a seat that acts after
+     * hero first folds the villains up to hero so hero's Max-EV action is assumed, then the seat becomes editable.
+     */
+    fun selectMatrixSeat(p: Position) {
+        if (p == flow.heroPosition) { fail("Tu acción la asume el oráculo: usa ⚡ Hice otra jugada"); return }
+        if (heroFoldPending()) { if (!continueInHand()) return }
+        if (!StreetFlowStateMachine.canStillAct(flow, p)) { fail("${p.short} no tiene acción pendiente en esta calle"); return }
+        if (StreetFlowStateMachine.foldUntil(flow, p) != null) {
+            matrixSeat = p; error = null
+            resetCustom(); publish()
+            return
+        }
+        input { StreetFlowStateMachine.foldVillainsUntilHero(it) }
+        matrixSeat = p
+        publish()
+    }
+
+    /** Assigns [option] to the matrix seat; every unassigned villain acting before it folds by omission. */
+    fun assignSeatAction(option: VillainOption) {
+        if (heroFoldPending()) { if (!continueInHand()) return }
+        val target = matrixSeat ?: flow.toAct ?: run { fail("No hay asiento seleccionado"); return }
+        input { s ->
+            val at = requireNotNull(StreetFlowStateMachine.foldUntil(s, target)) { "${target.short} no puede actuar ahora" }
+            StreetFlowStateMachine.act(at, option.kind, option.toAmount)
+        }
+    }
+
+    /** Matrix seat bets / raises to the custom amount. */
+    fun assignSeatCustom() {
+        val at = matrixState() ?: run { fail("No hay asiento seleccionado"); return }
+        val p = at.toAct ?: return
+        val cap = at.seat(p).streetInvest + at.stackLeft(p)
+        val kind = when {
+            customAmount >= cap - 1e-9 -> ActKind.ALL_IN
+            at.maxBet <= 0.0 -> ActKind.BET
+            else -> ActKind.RAISE
+        }
+        assignSeatAction(VillainOption("Custom", kind, customAmount))
+    }
+
+    /** "✓ Avanzar al Flop (Resto Fold)": every unassigned seat folds by omission; hero's turn is auto-assumed on the way. */
+    fun advancePreflopAssumingRemainingFold() {
+        if (flow.phase != StreetFlowPhase.VILLAIN_ACTION_STEPPER || flow.street != TableStreet.PREFLOP) { fail("La ronda preflop no está abierta"); return }
+        if (heroFoldPending()) { if (!continueInHand()) return }
+        input { StreetFlowStateMachine.foldVillainsUntilHero(it) }
+        autoAdvance = flow.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER && flow.toAct == flow.heroPosition
+    }
+
     /** Manual deviation: hero actually played oracle option [key] instead of the Max-EV action. */
     fun overrideHeroAction(key: String) {
         val snap = heroSnapshot ?: run { fail("No hay acción del héroe pendiente de cambiar"); return }
         val opt = result?.options?.firstOrNull { it.key == key } ?: run { fail("Opción desconocida $key"); return }
         runCatching { StreetFlowStateMachine.act(snap, opt.kind, opt.toAmount, isHero = true) }
-            .onSuccess { flow = it; committedKey = key; error = null; resetCustom(); publish() }
+            .onSuccess {
+                flow = if (heroChain) StreetFlowStateMachine.foldVillainsUntilHero(it) else it
+                committedKey = key; error = null; resetCustom(); publish()
+            }
             .onFailure { fail(it.message ?: "Acción ilegal") }
     }
 
@@ -221,6 +282,7 @@ class SolverViewModel(
         cancelCompute()
         flow = undoStack.removeLast()
         heroSnapshot = null; committedKey = null; error = null; pickerRank = null
+        matrixSeat = null; autoAdvance = false; heroChain = false
         resetCustom()
         settle(null)
     }
@@ -231,10 +293,17 @@ class SolverViewModel(
         heroSnapshot != null && flow.phase == StreetFlowPhase.HAND_COMPLETE && flow.heroFolded &&
             result?.options?.firstOrNull { it.key == committedKey }?.kind == ActKind.FOLD
 
+    /** State at the matrix seat's turn (implicit folds applied), or the live state when no seat is selected. */
+    private fun matrixState(): FlowState? {
+        val m = matrixSeat ?: return flow.takeIf { it.toAct != null && it.toAct != it.heroPosition }
+        return StreetFlowStateMachine.foldUntil(flow, m)
+    }
+
     private fun customBounds(): Pair<Double, Double>? {
-        val p = flow.toAct ?: return null
-        val cap = flow.seat(p).streetInvest + flow.stackLeft(p)
-        return minOf(StreetFlowStateMachine.minRaiseTo(flow), cap) to cap
+        val at = matrixState() ?: return null
+        val p = at.toAct ?: return null
+        val cap = at.seat(p).streetInvest + at.stackLeft(p)
+        return minOf(StreetFlowStateMachine.minRaiseTo(at), cap) to cap
     }
 
     private inline fun input(transition: (FlowState) -> FlowState) {
@@ -245,6 +314,7 @@ class SolverViewModel(
         if (undoStack.size > MAX_UNDO) undoStack.removeFirst()
         flow = next
         heroSnapshot = null; committedKey = null; error = null
+        matrixSeat = null; autoAdvance = false; heroChain = false
         resetCustom()
         settle(null)
     }
@@ -269,7 +339,15 @@ class SolverViewModel(
             if (gen != generation) return@launch
             computing = false
             result = r
-            if (snapshot.toAct == snapshot.heroPosition) commit(snapshot, r, preferKey)
+            if (snapshot.toAct == snapshot.heroPosition) {
+                commit(snapshot, r, preferKey)
+                if (autoAdvance && flow.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER && flow.toAct != flow.heroPosition) {
+                    flow = StreetFlowStateMachine.foldVillainsUntilHero(flow)
+                    heroChain = true
+                }
+                autoAdvance = false
+                resetCustom()
+            }
             publish()
         }
     }
@@ -312,10 +390,13 @@ class SolverViewModel(
         val best = r?.best
         val foldPending = heroFoldPending()
         // A pending hero fold keeps the villain stepper of the continuation line available.
-        val stepper = if (foldPending) heroSnapshot?.let { snap ->
+        val live = if (foldPending) heroSnapshot?.let { snap ->
             r?.options?.filter { it.kind != ActKind.FOLD && it.evBb.isFinite() }?.sortedByDescending { it.evBb }
                 ?.firstNotNullOfOrNull { o -> runCatching { StreetFlowStateMachine.act(snap, o.kind, o.toAmount, isHero = true) }.getOrNull() }
         } ?: s else s
+        // Matrix seat: options are those of that seat once the villains before it folded by omission.
+        val stepper = matrixSeat?.let { StreetFlowStateMachine.foldUntil(live, it) } ?: live
+        val streetActed = s.streetRecords(s.street).map { it.position }.toSet()
         val toAct = stepper.toAct
         val cap = toAct?.let { stepper.seat(it).streetInvest + stepper.stackLeft(it) } ?: tableStack
         _state.value = HandViewState(
@@ -331,9 +412,13 @@ class SolverViewModel(
             seats = Position.entries.map { p ->
                 val seat = s.seat(p)
                 SeatView(p.short, p, seat.lastLabel ?: if (seat.inHand) "" else "Fold", seat.streetInvest, s.stackLeft(p), seat.inHand,
-                    seat.allIn, p == hero, p == s.toAct, p == selectedSeat)
+                    seat.allIn, p == hero, p == s.toAct, p == selectedSeat,
+                    actedThisStreet = p in streetActed, canAct = StreetFlowStateMachine.canStillAct(live, p) && p != hero,
+                    isMatrixSelected = p == stepper.toAct && p != hero && stepper.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER)
             },
             toAct = s.toAct?.short,
+            actingSeat = toAct?.takeIf { it != hero }?.short,
+            canAdvancePreflop = s.street == TableStreet.PREFLOP && (s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER || foldPending) && !computing,
             potBb = s.potBb,
             effectiveStackBb = if (hero == null) s.stackBb else s.effectiveStackBb,
             spr = if (hero == null) Double.POSITIVE_INFINITY else s.spr,
