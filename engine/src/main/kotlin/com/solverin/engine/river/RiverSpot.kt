@@ -196,6 +196,12 @@ data class RiverPolicy(
     val condensedBluffScale: Double = 0.35,
     val condensedFoldScale: Double = 0.65,
     val stackOffEquity: Float = 0.62f,
+    /** Real over-fold lock: P(fold) ≥ (1 − MDF) + this, or the cap is never bypassed. */
+    val overrideOverfoldMargin: Double = 0.08,
+    /** A villain who called flop + turn folds the river at P(fold) × this (bluffs). */
+    val persistenceTightening: Double = 0.82,
+    /** Thin value vs a range that called two streets: a bet needs this equity vs the calling range, else check. */
+    val thinValueVsCallers: Float = 0.54f,
     /** Four-flush / four-straight shield. */
     val fourCardShield: Boolean = true,
 )

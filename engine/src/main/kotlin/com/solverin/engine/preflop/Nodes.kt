@@ -53,6 +53,8 @@ class CallNode(
     val potLevel: Int,
     /** P(a player left to act overcalls) — expected multiway realization loss. */
     val overcallBehind: Double = 0.0,
+    /** Extra realization multiplier of this flat (OOP vs a 4-bet, sandwiched cold caller facing a squeeze). */
+    val realizationFactor: Double = 1.0,
 )
 
 /** Index of the main opponent of a raise node. */

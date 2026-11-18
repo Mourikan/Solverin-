@@ -97,4 +97,27 @@ class ProfitReformsTest {
         assertEquals(expected, r.report(Street.PREFLOP)!!.rangeMass.getValue(Seat.RESPONDER), 0.5)
         assertTrue(Combos.COUNT == 1326)
     }
+
+    @Test fun closingReformsOverfoldLockAndPersistence() {
+        assertEquals(0.06, FlopPolicy().overrideOverfoldMargin); assertEquals(0.06, TurnPolicy().overrideOverfoldMargin)
+        assertEquals(0.08, RiverPolicy().overrideOverfoldMargin)
+        assertEquals(0.88, TurnPolicy().persistenceTightening); assertEquals(0.82, RiverPolicy().persistenceTightening)
+        assertEquals(0.54f, TurnPolicy().thinValueVsCallers); assertEquals(0.54f, RiverPolicy().thinValueVsCallers)
+        for (s in listOf(Stake.NL5, Stake.NL10, Stake.NL25)) assertTrue(StakePolicy.of(s).callEdgeBb >= 0.10, "$s flat edge")
+    }
+
+    @Test fun fourBetAndFiveBetDiscipline() {
+        val ctx = PreflopContext(Stake.NL100)
+        // Facing a population 5-bet jam (range collapsed to ~top 2.2%): AA / KK continue, dominated hands fold.
+        val five = engine.analyze(SpotKey.of(Scenario.VS_5BET, Position.BTN, Position.BB), ctx)
+        for (x in listOf("AA", "KK")) assertTrue(five.strategy.fold(h(x)) < 0.5f, "$x calls the 5-bet")
+        for (x in listOf("AQs", "AJs", "JJ", "TT")) assertEquals(1f, five.strategy.fold(h(x)), 1e-6f, "$x folds to the 5-bet")
+        // Facing a 4-bet: easily dominated hands never flat.
+        val four = engine.analyze(SpotKey.of(Scenario.VS_4BET, Position.BB, Position.BTN), ctx)
+        for (x in listOf("AQo", "AJo", "KQo", "ATs", "KJs", "QJs")) assertEquals(0f, four.strategy.call(h(x)), 1e-6f, "$x does not flat a 4-bet")
+        // MP (HJ) open needs +0.08 bb: the open range is never wider than the population solve.
+        val tight = engine.analyze(SpotKey.of(Scenario.RFI, Position.HJ), ctx).strategy.raiseFrequency()
+        val loose = engine.analyze(SpotKey.of(Scenario.RFI, Position.HJ), ctx.copy(policy = ctx.policy.copy(heroDiscipline = false))).strategy.raiseFrequency()
+        assertTrue(tight <= loose + 1e-9, "MP opens $tight vs $loose")
+    }
 }

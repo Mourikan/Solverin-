@@ -222,6 +222,12 @@ data class TurnPolicy(
     val exploitOverridePotShare: Double = 0.30,
     val exploitBlocker: Double = 0.90,
     val exploitOverrideOuts: Int = 9,
+    /** Real over-fold lock: P(fold) ≥ (1 − MDF) + this, or the cap is never bypassed. */
+    val overrideOverfoldMargin: Double = 0.06,
+    /** A villain who called hero's flop bet folds the turn at P(fold) × this (bluffs / semi-bluffs). */
+    val persistenceTightening: Double = 0.88,
+    /** Thin value vs a range that already called: a bet needs this equity vs the calling range, else check. */
+    val thinValueVsCallers: Float = 0.54f,
     /** Condensed villain (called a flop bet, RAISE_CALL or 3-bet+ pot): bluff-cap ratio × this. */
     val condensedBluffScale: Double = 0.35,
     /** Condensed villain: his P(fold) vs hero's bets / raises × this (the folded mass continues). */

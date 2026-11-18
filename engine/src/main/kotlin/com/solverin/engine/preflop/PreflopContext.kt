@@ -84,6 +84,10 @@ data class StakePolicy(
      * it builds an opponent's range from the solved node of his seat: those rules are hero's, not the population's.
      */
     val heroDiscipline: Boolean = true,
+    /** MP (HJ) open: the RFI must clear this extra net EV (thin offsuit / small-connector tail loses OOP postflop). */
+    val mpOpenEdgeBb: Double = 0.08,
+    /** VS_4BET: a 5-bet jam that is not for value needs the 4-bettor to fold at least this often. */
+    val fiveBetBluffMinFold: Double = 0.42,
 ) {
     private fun facingReraise(s: Scenario) = s == Scenario.VS_3BET || s == Scenario.VS_4BET || s == Scenario.VS_5BET ||
         s == Scenario.VS_SQUEEZE_OPENER || s == Scenario.VS_SQUEEZE_CALLER || s == Scenario.VS_3BET_COLD
@@ -100,14 +104,16 @@ data class StakePolicy(
 
     /** Net EV a raise must clear vs folding at node ([s], [hero]). */
     fun raiseEdge(s: Scenario, hero: Position): Double =
-        raiseEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + if (facingReraise(s)) facingReraiseRaiseEdgeBb else 0.0
+        raiseEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + (if (facingReraise(s)) facingReraiseRaiseEdgeBb else 0.0) +
+            if (s == Scenario.RFI && hero == Position.HJ) mpOpenEdgeBb else 0.0
 
     companion object {
         fun of(stake: Stake): StakePolicy = when (stake) {
             Stake.NL2 -> StakePolicy(0.10, 0.02, 0.04)
-            Stake.NL5 -> StakePolicy(0.08, 0.02, 0.04)
-            Stake.NL10 -> StakePolicy(0.06, 0.015, 0.04)
-            Stake.NL25 -> StakePolicy(0.04, 0.01, 0.035)
+            // NL5–NL25: +0.06 bb on every flat (rake cap vs a pool that no longer pays off like NL2).
+            Stake.NL5 -> StakePolicy(0.14, 0.02, 0.04)
+            Stake.NL10 -> StakePolicy(0.12, 0.015, 0.04)
+            Stake.NL25 -> StakePolicy(0.10, 0.01, 0.035)
             Stake.NL50 -> StakePolicy(0.025, 0.005, 0.03)
             Stake.NL100 -> StakePolicy(0.01, 0.0, 0.025)
             Stake.NL200 -> StakePolicy(0.0, 0.0, 0.02)

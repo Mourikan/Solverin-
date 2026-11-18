@@ -396,7 +396,12 @@ class RiverMathEngine(
         // Condensed villain (called two streets / 3-bet pot): he folds less than his unconditional profile.
         val eqC = if (allIn) r.eqContinue else r.eqCall
         // Tightened condensed villain: bluffs (< 50% vs his calling range) get less fold equity; value keeps the profile.
-        val pFold = if (tightened && eqC < 0.5f) r.pFold * p.condensedFoldScale else r.pFold
+        val persist = when {
+            tightened -> p.condensedFoldScale
+            spot.villainCalledTwoStreets -> p.persistenceTightening
+            else -> 1.0
+        }
+        val pFold = if (eqC < 0.5f) r.pFold * persist else r.pFold
         var pc = r.pCall + (r.pFold - pFold); var pr = r.pRaise
         if (allIn) { pc += pr; pr = 0.0 }
         val fin = pot + 2 * x

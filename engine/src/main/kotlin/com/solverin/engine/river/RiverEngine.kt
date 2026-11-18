@@ -36,7 +36,11 @@ class RiverSession(val spot: RiverSpot) {
      * Override gate: after two streets of calls it stays shut unless the villain over-folds vs MDF at this price on his
      * unconditional population profile (a locked Nit / station read describes his whole range, not what is left of it).
      */
-    private fun overrideOpen(m: RiverMathEngine, overfolds: Boolean) = !spot.villainCalledTwoStreets || (overfolds && !m.betFoldLocked)
+    private fun overrideOpen(m: RiverMathEngine, overfolds: Boolean) = overfolds && !m.station && !(spot.condensedVillain && m.betFoldLocked)
+
+    /** Thin value vs a range that called two streets: below thinValueVsCallers vs his calling range, check instead. */
+    private fun thinValueBlocked(m: RiverMathEngine, p: RiverPolicy, t: RiverEvTerms) =
+        spot.villainCalledTwoStreets && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers
 
     /** Stack-off guard vs a condensed range: an all-in needs stackOffEquity vs the calling range or a nut hand. */
     private fun stackOffBlocked(m: RiverMathEngine, p: RiverPolicy, h: Int, t: RiverEvTerms): Boolean =
@@ -69,6 +73,7 @@ class RiverSession(val spot: RiverSpot) {
         val betTerms = arrayOfNulls<RiverEvTerms>(Combos.COUNT)
         val chosen = DoubleArray(Combos.COUNT) { Double.NaN }
         val capped = BooleanArray(Combos.COUNT)
+        val fired = BooleanArray(Combos.COUNT)
         if (sizes.isEmpty()) {
             for (h in heroIdx) fc[h] = 1f
             return analysis(m, mapOf(RiverAction.CHECK to fc), mapOf(RiverAction.CHECK to check), chosen, capped, sizes, null, null, false, null, null)
@@ -78,7 +83,7 @@ class RiverSession(val spot: RiverSpot) {
             for (size in sizes) {
                 val t = m.bet(h, size)
                 if (any == null || t.ev > any.ev) any = t
-                if (sizeAllowed(m, p, h, size, t) && !stackOffBlocked(m, p, h, t) && (best == null || t.ev > best.ev)) { best = t; bestSize = size }
+                if (sizeAllowed(m, p, h, size, t) && !stackOffBlocked(m, p, h, t) && !thinValueBlocked(m, p, t) && (best == null || t.ev > best.ev)) { best = t; bestSize = size }
             }
             if (best == null) { betTerms[h] = any; fc[h] = 1f; continue }
             betTerms[h] = best; chosen[h] = bestSize
@@ -96,20 +101,21 @@ class RiverSession(val spot: RiverSpot) {
             val ratio = (RiverSizingOptimizer.nashBluffRatio(size) * (foldAll / ref).let { it * it })
                 .coerceIn(p.minBluffRatio, if (m.betFoldLocked) p.maxBluffRatioLocked else p.maxBluffRatio) *
                 (if (m.tightened) p.condensedBluffScale else 1.0)
-            val overfolds = foldAll > 1 - 1 / (1 + size)
+            val overfolds = foldAll >= 1 - 1 / (1 + size) + p.overrideOverfoldMargin
             val valueEq = if (m.station) 0.45f else 0.5f
             val cut = TurnBluffCap.apply(
                 bucket, m.hero, ratio, m.station, agg, pas, null,
                 aggEv = { betTerms[it]!!.ev }, passiveEv = { check[it]!!.ev },
                 isValue = { betTerms[it]!!.equity >= valueEq }, priority = { betTerms[it]!!.bNut < 1.0 && betTerms[it]!!.bFold >= 1.0 },
                 foldAllowed = { false },
-                exempt = { overrideOpen(m, overfolds) && betTerms[it]!!.bNut < p.exploitBlocker && betTerms[it]!!.ev - check[it]!!.ev >= exploitThreshold(p, pot) },
+                exempt = { h -> (overrideOpen(m, overfolds) && betTerms[h]!!.bNut < p.exploitBlocker && betTerms[h]!!.ev - check[h]!!.ev >= exploitThreshold(p, pot))
+                    .also { if (it) fired[h] = true } },
             )
             for (h in bucket) { fb[h] = agg[h]; fc[h] = pas[h]; if (cut[h]) capped[h] = true }
         }
         val act = spot.heroBetAction
         return analysis(m, mapOf(RiverAction.CHECK to fc, act to fb), mapOf(RiverAction.CHECK to check, act to betTerms), chosen, capped,
-            sizes, null, null, false, null, null)
+            sizes, null, null, false, null, null, fired = fired)
     }
 
     private fun enforceMdf(heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, callEv: (Int) -> Double) {
@@ -157,14 +163,16 @@ class RiverSession(val spot: RiverSpot) {
         val ratio = (RiverSizingOptimizer.nashBluffRatio(raiseSize) * (foldR / ref.coerceAtLeast(0.05)).let { it * it })
             .coerceIn(p.minBluffRatio, if (ctx.locks[RiverVillainNode.VS_RAISE]?.fold != null) p.maxBluffRatioLocked else p.maxBluffRatio) *
             (if (m.tightened) p.condensedBluffScale else 1.0)
-        val raiseOverfolds = foldR > ref
+        val raiseOverfolds = foldR >= ref + p.overrideOverfoldMargin
+        val firedR = BooleanArray(Combos.COUNT)
         val capped = TurnBluffCap.apply(
             heroIdx, m.hero, ratio, false, fR, fC, fF,
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { (raise[it]?.equity ?: 0f) >= 0.5f }, priority = { raise[it]?.let { r -> r.bNut < 1.0 && r.bFold >= 1.0 } ?: false },
             foldAllowed = ::foldAllowed,
-            exempt = { h -> raise[h]?.let { r -> overrideOpen(m, raiseOverfolds) && r.bNut < p.exploitBlocker &&
-                r.ev - maxOf(call[h]!!.ev, if (foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY) >= exploitThreshold(p, pot) } ?: false },
+            exempt = { h -> (raise[h]?.let { r -> overrideOpen(m, raiseOverfolds) && r.bNut < p.exploitBlocker &&
+                r.ev - maxOf(call[h]!!.ev, if (foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY) >= exploitThreshold(p, pot) } ?: false)
+                .also { if (it) firedR[h] = true } },
         )
         if (!spot.heroInPosition) {
             TurnBluffCap.capTotal(heroIdx, m.hero, p.checkRaiseCap, fR, fC, fF, capped,
@@ -180,17 +188,17 @@ class RiverSession(val spot: RiverSpot) {
         val bluff = m.bluffShare(bet); val alpha = m.alpha(bet)
         return analysis(m, mapOf(RiverAction.FOLD to fF, RiverAction.CALL to fC, RiverAction.RAISE to fR),
             mapOf(RiverAction.CALL to call, RiverAction.RAISE to raise), DoubleArray(Combos.COUNT) { Double.NaN }, capped,
-            emptyList(), mdf, potOdds, minBet, floor, donk, bluff, alpha)
+            emptyList(), mdf, potOdds, minBet, floor, donk, bluff, alpha, firedR)
     }
 
     private fun analysis(
         m: RiverMathEngine, freq: Map<RiverAction, FloatArray>, terms: Map<RiverAction, Array<RiverEvTerms?>>, sizes: DoubleArray,
         capped: BooleanArray, candidates: List<Double>, mdf: Double?, potOdds: Double?, minBet: Boolean, maxFold: Double?,
-        donk: RiverDonkType?, bluffShare: Double = Double.NaN, alpha: Double = Double.NaN,
+        donk: RiverDonkType?, bluffShare: Double = Double.NaN, alpha: Double = Double.NaN, fired: BooleanArray = BooleanArray(Combos.COUNT),
     ) = RiverAnalysis(
         spot, m.impact, spot.nodeType, m.rangeAdvantage, m.nutAdvantage, m.villainCapped,
         RiverSizingOptimizer.overbetEnabled(m.nutAdvantage, m.villainCapped, m.policy),
-        mdf, potOdds, minBet, maxFold, donk, bluffShare, alpha, freq, terms, m.hero, sizes, capped, candidates,
+        mdf, potOdds, minBet, maxFold, donk, bluffShare, alpha, freq, terms, m.hero, sizes, capped, candidates, fired,
     )
 }
 
@@ -219,7 +227,10 @@ class RiverAnalysis(
     private val sizes: DoubleArray,
     private val capped: BooleanArray,
     val sizeCandidates: List<Double>,
+    /** Combos whose bluff kept its frequency through PostflopMassiveExploitOverride (exempt from the cap). */
+    private val overrideFired: BooleanArray = BooleanArray(Combos.COUNT),
 ) {
+    fun overrideFired(combo: Int): Boolean = overrideFired[combo]
     /** Villain under-bluffs: pure bluff-catchers may over-fold (MDF ignored). */
     val exploitOverFold: Boolean get() = !bluffShare.isNaN() && bluffShare < alpha
 

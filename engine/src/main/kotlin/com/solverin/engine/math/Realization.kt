@@ -77,6 +77,7 @@ object Realization {
     const val SMALL_PAIR_NO_SET_ODDS = 0.80
     const val BLIND_TRASH = 0.85
     const val SB_FLAT_SANDWICH = 0.88
+    const val DOMINATED_VS_FOUR_BET = 0.75
 
     /**
      * Preflop calling-realization penalties (multiplier ≤ 1):
@@ -93,6 +94,9 @@ object Realization {
             if (!pair && !suited && lo >= 8 && !(hi == 12 && lo >= 10)) f *= DOMINATED_OFFSUIT_VS_RERAISE
             if (suited && hi == 12 && lo <= 7) f *= WEAK_SUITED_ACE_VS_RERAISE
             if (pair && hi <= 7 && behindToCallRatio < SET_MINE_RATIO) f *= SMALL_PAIR_NO_SET_ODDS
+            // Facing a 4-bet: easily dominated hands (AQo, AJo, KQo, ATs, KJs, QJs) do not flat.
+            if (potLevel >= 3 && !pair && ((!suited && ((hi == 12 && lo in 9..10) || (hi == 11 && lo == 10))) ||
+                    (suited && ((hi == 12 && lo == 8) || (hi == 11 && lo == 9) || (hi == 10 && lo == 9))))) f *= DOMINATED_VS_FOUR_BET
         } else if (blindPosted > 0.0) {
             val gap = hi - lo
             if (!pair && !suited && hi < 12 && lo < 8 && (gap >= 3 || (hi <= 6 && gap >= 2))) f *= BLIND_TRASH

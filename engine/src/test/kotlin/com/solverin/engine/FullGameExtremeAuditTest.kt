@@ -129,12 +129,10 @@ class FullGameExtremeAuditTest {
         val m = ra.riverSession!!.math(ra.riverContext!!)
         val tA = ra.river!!.terms(RiverAction.TRIPLE_BARREL, k("AsQd"))!!
         println("E AsQd bet=%.2f check=%.2f bNut=%.2f mix=%s | QhJh mix=%s ev=%s".format(tA.ev, ra.heroEv.getValue("CHECK"), tA.bNut, ra.heroMix, qj.report(Street.RIVER)!!.heroMix, qj.report(Street.RIVER)!!.heroEv))
-        // Two streets of calls, but the population (no locked read) still over-folds this river vs MDF: the override opens
-        // only with a real nut blocker and EV − check ≥ max(4 bb, 25% pot).
+        // Overfold lock: after two streets of calls the population does not fold ≥ (1 − MDF) + 8 pp, so the override never
+        // fires (the bluff budget alone decides).
         assertTrue(ra.river!!.spot.villainCalledTwoStreets)
-        assertTrue(tA.bNut < RiverPolicy().exploitBlocker && tA.ev - ra.heroEv.getValue("CHECK") >=
-            maxOf(RiverPolicy().exploitOverrideBb, RiverPolicy().exploitPotShare * ra.potBb))
-        assertTrue(ra.heroMix.getValue("TRIPLE_BARREL") > 0.99f, "PostflopMassiveExploitOverride: A♠Q♦ bluffs")
+        assertTrue(!ra.river!!.overrideFired(k("AsQd")), "PostflopMassiveExploitOverride shut without a real over-fold")
         // A locked Nit / over-fold read after two calls keeps it shut (the read is unconditional, his range is not).
         val nit = play(base.copy(locks = com.solverin.engine.pipeline.HandLocks(river = RiverNodeLocks.foldToRiverBet(0.72))), "E nit")
         val rn = nit.report(Street.RIVER)!!

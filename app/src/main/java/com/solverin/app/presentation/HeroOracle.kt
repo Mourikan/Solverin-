@@ -69,7 +69,7 @@ data class NodeMath(
     val rakeCapBb: Double = 0.0,
     /** Aggression of this hand cut by the vulnerability brake / four-flush shield / bluff cap. */
     val aggressionCapped: Boolean = false,
-    /** PostflopMassiveExploitOverride margin reached (aggressive Max-EV gap ≥ the street threshold). */
+    /** PostflopMassiveExploitOverride fired for hero's combo (the engine exempted it from the bluff cap). */
     val overrideActive: Boolean = false,
     val overrideThresholdBb: Double? = null,
     val geometricSize: Double? = null,
@@ -427,7 +427,6 @@ class HeroOracle(
         val aggr = ranked.firstOrNull { it.kind == ActKind.BET || it.kind == ActKind.RAISE || it.kind == ActKind.ALL_IN }
         val passiveEv = ranked.filter { it.kind == ActKind.CHECK || it.kind == ActKind.CALL }.maxOfOrNull { it.evBb } ?: 0.0
         val base = baseMath(s, stake)
-        val gap = if (best != null && aggr != null && best.key == aggr.key) aggr.evBb - maxOf(passiveEv, 0.0) else null
         rep.flop?.let { a ->
             val t = subject?.let { k -> runCatching { a.terms(FlopAction.valueOf(k), h) }.getOrNull() }
             val ta = aggr?.let { k -> runCatching { a.terms(FlopAction.valueOf(k.key), h) }.getOrNull() }
@@ -436,7 +435,7 @@ class HeroOracle(
                 equity = t?.equity?.toDouble(), realization = t?.realization?.toDouble(),
                 rangeAdvantage = a.rangeAdvantage, nutAdvantage = a.nutAdvantage, mdf = a.mdf, potOdds = a.potOdds,
                 pFoldVillain = ta?.pFold, rakeBb = t?.rake ?: base.rakeBb, aggressionCapped = a.capped(h),
-                overrideActive = gap != null && gap >= th && (ta?.equity ?: 1f) < 0.5f, overrideThresholdBb = th,
+                overrideActive = a.overrideFired(h), overrideThresholdBb = th,
                 geometricSize = a.geometricSize.takeIf { it.isFinite() },
             )
         }
@@ -448,7 +447,7 @@ class HeroOracle(
                 equity = t?.equity?.toDouble(), realization = t?.realization?.toDouble(),
                 rangeAdvantage = a.rangeAdvantage, nutAdvantage = a.nutAdvantage, mdf = a.mdf, potOdds = a.potOdds,
                 pFoldVillain = ta?.pFold, rakeBb = t?.rake ?: base.rakeBb, aggressionCapped = a.capped(h),
-                overrideActive = gap != null && gap >= th && (ta?.equity ?: 1f) < 0.5f, overrideThresholdBb = th,
+                overrideActive = a.overrideFired(h), overrideThresholdBb = th,
                 geometricSize = a.geometricSize.takeIf { it.isFinite() },
             )
         }
@@ -462,7 +461,7 @@ class HeroOracle(
                 rangeAdvantage = a.rangeAdvantage, nutAdvantage = a.nutAdvantage, mdf = a.mdf, potOdds = a.potOdds,
                 pFoldVillain = ta?.pFold, bNut = (ta ?: t)?.bNut, bFold = (ta ?: t)?.bFold, rakeBb = t?.rake ?: base.rakeBb,
                 aggressionCapped = a.capped(h), overrideThresholdBb = th,
-                overrideActive = gap != null && gap >= th && (ta?.bNut ?: 1.0) < pol.exploitBlocker && (ta?.equity ?: 1f) < 0.5f,
+                overrideActive = a.overrideFired(h),
                 bluffShare = a.bluffShare.takeIf { it.isFinite() }, alpha = a.alpha.takeIf { it.isFinite() },
             )
         }

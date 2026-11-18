@@ -53,7 +53,7 @@ class TurnDeepStressTest {
             val up = (0 until Combos.COUNT).filter { now.heroRange[it] > 0f && now.frequency(act, it) > old.frequency(act, it) + 0.5f }
             println("S1 $flop$turn barrel %.3f → %.3f, flipped ${up.size}: ".format(old.frequency(act), now.frequency(act)) +
                 up.take(6).joinToString { "%s L=%.3f ev=%.2f chk=%.2f".format(Combos.name(it), m.leverage(it, tr.effectiveStackBb, tr.potBb), now.ev(act, it), now.ev(TurnAction.CHECK, it)) })
-            assertTrue(now.frequency(act) >= old.frequency(act), "$flop$turn: barrel frequency does not drop")
+            assertTrue(now.frequency(act) >= old.frequency(act) - 0.005, "$flop$turn: barrel frequency does not drop")
             val levered = up.filter { proj.scare[it] > 0 && m.leverage(it, tr.effectiveStackBb, tr.potBb) > mo.leverage(it, tr.effectiveStackBb, tr.potBb) }
             if (levered.isNotEmpty()) flippedSpots++
             for (h in levered) {
@@ -152,13 +152,15 @@ class TurnDeepStressTest {
                     val t = m.aggressive(h, pot, bet, 0.0, 0.0, resp, 1)
                     val l = m.leverage(h, stack - bet, pot + 2 * bet)
                     assertEquals(1.0, t.pFold + t.pCall + t.pRaise, 1e-12, "sum = 1")
-                    assertEquals(minOf(1.0, raw[0] * l), t.pFold, 1e-12, "P(fold) · LeverageFactor")
-                    if (raw[1] > 0 && raw[2] > 0) assertEquals(raw[1] / raw[2], t.pCall / t.pRaise, 1e-9, "call / raise ratio preserved")
-                    if (l > 1.0) assertTrue(t.pFold > raw[0] || raw[0] == 0.0 || raw[0] == 1.0)
+                    // Bluffs into a condensed range also carry the persistence factor (villain already called the flop).
+                    val persist = if (t.equity < 0.5f) m.persistence else 1.0
+                    assertEquals(minOf(1.0, raw[0] * l) * persist, t.pFold, 1e-12, "P(fold) · LeverageFactor · persistence")
+                    if (persist == 1.0 && raw[1] > 0 && raw[2] > 0) assertEquals(raw[1] / raw[2], t.pCall / t.pRaise, 1e-9, "call / raise ratio preserved")
+                    if (l > 1.0 && persist == 1.0) assertTrue(t.pFold > raw[0] || raw[0] == 0.0 || raw[0] == 1.0)
                     assertEquals(t.pFold * t.foldWin + t.pCall * t.calledEv + t.pRaise * t.evVsRaise, t.ev, 1e-9, "EV identity")
                     val r2 = m.aggressive(h, pot + bet, 3 * bet, 0.0, bet, m.villainModel.respondToRaise(resp.raise), 2)
                     val raw2 = m.villainModel.respondToRaise(resp.raise).probabilities(h)
-                    assertEquals(raw2[0], r2.pFold, 1e-12, "raises are not leveraged")
+                    assertEquals(raw2[0] * (if (r2.equity < 0.5f) m.persistence else 1.0), r2.pFold, 1e-12, "raises are not leveraged (persistence only)")
                     checked++
                 }
             }

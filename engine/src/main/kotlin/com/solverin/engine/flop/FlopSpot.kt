@@ -123,6 +123,8 @@ data class FlopPolicy(
     val exploitOverrideBb: Double = 1.5,
     val exploitOverridePotShare: Double = 0.25,
     val exploitOverrideOuts: Int = 9,
+    /** Real over-fold lock: P(fold) ≥ (1 − MDF) + this, or the cap is never bypassed. */
+    val overrideOverfoldMargin: Double = 0.06,
 )
 
 data class FlopContext(

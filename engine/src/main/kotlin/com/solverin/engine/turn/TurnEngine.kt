@@ -58,10 +58,10 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
         val geometric = TurnSizingOptimizer.geometricFraction(spr)
         val sizes = TurnSizingOptimizer.candidates(spr, m.nutAdvantage, m.villainCapped, p)
         fun base(freq: Map<TurnAction, FloatArray>, terms: Map<TurnAction, Array<TurnEvTerms?>>, size: Double?, bet: Double?,
-                 capped: BooleanArray = BooleanArray(Combos.COUNT)) = TurnAnalysis(
+                 capped: BooleanArray = BooleanArray(Combos.COUNT), fired: BooleanArray = BooleanArray(Combos.COUNT)) = TurnAnalysis(
             spot, m.impact, spot.nodeType, m.rangeAdvantage, m.nutAdvantage, m.villainCapped,
             m.heroVsVillain.rangeEquity(m.hero), size, bet, null, null, false, freq, terms, m.hero, capped,
-            sizes, elasticity, geometric, null, m.donkType,
+            sizes, elasticity, geometric, null, m.donkType, overrideFired = fired,
         )
         if (sizes.isEmpty()) {
             val fc = FloatArray(Combos.COUNT); for (h in heroIdx) fc[h] = 1f
@@ -74,17 +74,21 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             val xResp = m.extraModel?.respondToBet(m.extraNodeRange!!, pot, b)
             val bets = arrayOfNulls<TurnEvTerms>(Combos.COUNT)
             val fc = FloatArray(Combos.COUNT); val fb = FloatArray(Combos.COUNT)
+            val fired = BooleanArray(Combos.COUNT)
+            val gated = BooleanArray(Combos.COUNT)
             for (h in heroIdx) {
                 val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                 bets[h] = t
                 // ThreeFlushTurnBrake: braked hands never overbet. Condensed villain: no stack-off without equity / nuts.
-                val betEv = if ((size > p.standardBet && m.braked(h, facingRange)) || stackOffBlocked(m, p, h, t)) Double.NEGATIVE_INFINITY else t.ev
+                val guard = stackOffBlocked(m, p, h, t) || thinValueBlocked(m, p, t)
+                if (guard) gated[h] = true
+                val betEv = if ((size > p.standardBet && m.braked(h, facingRange)) || guard) Double.NEGATIVE_INFINITY else t.ev
                 val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, betEv, p.mixBandBb)
                 fc[h] = mix[1]; fb[h] = mix[2]
             }
             val foldAll = resp.foldTotal / resp.priorTotal * (xResp?.let { it.foldTotal / it.priorTotal } ?: 1.0)
             val ratio = TurnBluffCap.ratio(false, b / pot, foldAll, m.villainModel.mdf(pot, b), m.responseFoldLocked, p) * condensedScale(p, m)
-            val overfolds = foldAll > 1 - m.villainModel.mdf(pot, b)
+            val overfolds = foldAll >= 1 - m.villainModel.mdf(pot, b) + p.overrideOverfoldMargin
             // A locked fold is a read: value is measured vs his whole range so an over-folder does not shrink it.
             val cont = if (m.responseFoldLocked) resp.prior else resp.continueRange
             val valueEq = if (m.station) p.thinValueEquity else 0.5f
@@ -93,22 +97,32 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
                 isValue = { m.eqVs(cont).equity(it) >= valueEq || m.isNut(it) },
                 priority = { m.semiBluffPriority(it, cont) }, foldAllowed = { false },
-                exempt = { overrideOpen(overfolds) && m.exploitEligible(it, cont) && bets[it]!!.ev - check[it]!!.ev >= overrideThreshold(p, pot) },
+                exempt = { h -> (overrideOpen(m, overfolds) && m.exploitEligible(h, cont) && bets[h]!!.ev - check[h]!!.ev >= overrideThreshold(p, pot))
+                    .also { if (it) fired[h] = true } },
             )
             fourFlushShield(m, heroIdx, fb, fc, null, capped, { check[it]!!.ev }, { false })
+            for (h in heroIdx) if (gated[h]) capped[h] = true
             var total = 0.0
             for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
-            if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped)
+            if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped, fired)
         }
         val c = best!!
-        return base(mapOf(TurnAction.CHECK to c.fc, betAction to c.fb), mapOf(TurnAction.CHECK to check, betAction to c.bets), c.size, c.bet, c.capped)
+        return base(mapOf(TurnAction.CHECK to c.fc, betAction to c.fb), mapOf(TurnAction.CHECK to check, betAction to c.bets), c.size, c.bet, c.capped, c.fired)
     }
 
     /** Override threshold: max(exploitOverrideBb, exploitOverridePotShare × pot). */
     private fun overrideThreshold(p: TurnPolicy, pot: Double) = maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot)
 
-    /** No override in RAISE_CALL / 3-bet pots, and only vs a villain over-folding vs MDF. */
-    private fun overrideOpen(overfolds: Boolean) = overfolds && !spot.threeBetPot && spot.line != FlopLine.RAISE_CALL
+    /**
+     * No override in RAISE_CALL / 3-bet pots, vs a station or a locked read that already called (Nit), and only vs a
+     * villain over-folding by at least overrideOverfoldMargin above 1 − MDF.
+     */
+    private fun overrideOpen(m: TurnMathEngine, overfolds: Boolean) = overfolds && !spot.threeBetPot && spot.line != FlopLine.RAISE_CALL &&
+        !m.station && !(spot.condensedVillain && m.responseFoldLocked)
+
+    /** Thin value vs a range that already called: below thinValueVsCallers vs his calling range, check instead. */
+    private fun thinValueBlocked(m: TurnMathEngine, p: TurnPolicy, t: TurnEvTerms) =
+        spot.condensedVillain && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers
 
     private fun condensedScale(p: TurnPolicy, m: TurnMathEngine) = if (m.tightened) p.condensedBluffScale else 1.0
 
@@ -118,7 +132,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
 
     private class SizeResult(
         val size: Double, val bet: Double, val total: Double, val bets: Array<TurnEvTerms?>,
-        val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray,
+        val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray, val fired: BooleanArray,
     )
 
     private fun enforceMdf(heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, callEv: (Int) -> Double) {
@@ -165,7 +179,8 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
         val raiseSize = m.raiseTo(bet, potBefore) - bet
         val ratio = TurnBluffCap.ratio(true, raiseSize / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
             m.villainModel.mdf(potBefore, raiseSize), m.raiseFoldLocked, p) * condensedScale(p, m)
-        val raiseOverfolds = raiseResp.foldTotal / raiseResp.priorTotal > 1 - m.villainModel.mdf(potBefore, raiseSize)
+        val raiseOverfolds = raiseResp.foldTotal / raiseResp.priorTotal >= 1 - m.villainModel.mdf(potBefore, raiseSize) + p.overrideOverfoldMargin
+        val firedR = BooleanArray(Combos.COUNT)
         val cont = if (m.raiseFoldLocked) raiseResp.prior else raiseResp.continueRange
         val capped = TurnBluffCap.apply(
             heroIdx, m.hero, ratio, false, fRaise, fCall, fFold,
@@ -173,8 +188,8 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             isValue = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             priority = { m.semiBluffPriority(it, cont) },
             foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
-            exempt = { h -> overrideOpen(raiseOverfolds) && m.exploitEligible(h, cont) &&
-                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= overrideThreshold(p, potBefore) },
+            exempt = { h -> (overrideOpen(m, raiseOverfolds) && m.exploitEligible(h, cont) &&
+                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= overrideThreshold(p, potBefore)).also { if (it) firedR[h] = true } },
         )
         if (!spot.heroInPosition) {
             val connected = m.impact.has(TurnCardCategory.FLUSH_COMPLETING) || m.impact.has(TurnCardCategory.STRAIGHT_COMPLETING)
@@ -199,6 +214,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             mapOf(TurnAction.FOLD to fFold, TurnAction.CALL to fCall, TurnAction.RAISE to fRaise),
             mapOf(TurnAction.CALL to call, TurnAction.RAISE to raise), m.hero, capped,
             emptyList(), Double.NaN, TurnSizingOptimizer.geometricFraction(spot.effectiveStackBb / pot), mdfFloor, m.donkType,
+            overrideFired = firedR,
         )
     }
 }
@@ -230,8 +246,11 @@ class TurnAnalysis(
     val maxFold: Double?,
     /** Turn donk read when villain leads into the flop aggressor. */
     val donkType: TurnDonkType? = null,
+    /** Combos whose bluff kept its frequency through PostflopMassiveExploitOverride (exempt from the cap). */
+    private val overrideFired: BooleanArray = BooleanArray(Combos.COUNT),
 ) {
     fun capped(combo: Int): Boolean = capped[combo]
+    fun overrideFired(combo: Int): Boolean = overrideFired[combo]
     val actions: List<TurnAction> get() = freq.keys.toList()
     /** Hero's aggressive first action at this node, when it has one. */
     val betAction: TurnAction? get() = freq.keys.firstOrNull { it != TurnAction.CHECK && it != TurnAction.FOLD && it != TurnAction.CALL && it != TurnAction.RAISE }

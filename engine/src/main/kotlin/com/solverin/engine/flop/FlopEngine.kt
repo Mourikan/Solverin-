@@ -75,6 +75,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                     val xResp = m.extraModel?.respondToBet(m.extraNodeRange!!, pot, b)
                     val bets = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
                     val fc = FloatArray(Combos.COUNT); val fb = FloatArray(Combos.COUNT)
+                    val fired = BooleanArray(Combos.COUNT)
                     for (h in heroIdx) {
                         val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                         bets[h] = t
@@ -88,12 +89,12 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                         heroIdx, m.hero, ratio, fb, fc, null,
                         aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
                         isValue = { m.eqVs(resp.continueRange).equity(it) >= 0.5f || m.isNut(it) }, foldAllowed = { false },
-                        exempt = { foldAll > 1 - m.villainModel.mdf(pot, b) && m.outs[it] >= p.exploitOverrideOuts &&
-                            bets[it]!!.ev - check[it]!!.ev >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot) },
+                        exempt = { h -> (foldAll >= 1 - m.villainModel.mdf(pot, b) + p.overrideOverfoldMargin && m.outs[h] >= p.exploitOverrideOuts &&
+                            bets[h]!!.ev - check[h]!!.ev >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot)).also { if (it) fired[h] = true } },
                     )
                     var total = 0.0
                     for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
-                    if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped)
+                    if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped, fired)
                 }
                 val chosen = best!!
                 FlopAnalysis(
@@ -103,6 +104,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                     freq = mapOf(FlopAction.CHECK to chosen.fc, betAction to chosen.fb),
                     terms = mapOf(FlopAction.CHECK to check, betAction to chosen.bets), heroRange = m.hero, capped = chosen.capped,
                     sizeCandidates = sizes, elasticity = elasticity, geometricSize = BetSizingOptimizer.geometric(spr, p.streetsToRiver),
+                    overrideFired = chosen.fired,
                 )
             }
         }
@@ -128,7 +130,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
 
     private class SizeResult(
         val size: Double, val bet: Double, val total: Double, val bets: Array<FlopEvTerms?>,
-        val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray,
+        val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray, val fired: BooleanArray,
     )
 
     private fun facingBet(m: FlopMathEngine, ctx: FlopContext, heroIdx: List<Int>): FlopAnalysis {
@@ -155,6 +157,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)
         val raiseSize = m.raiseTo(bet, potBefore) - bet
+        val firedR = BooleanArray(Combos.COUNT)
         val ratio = FlopBluffCap.ratio(true, raiseSize / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
             m.villainModel.mdf(potBefore, raiseSize), locked = ctx.locks[FlopVillainNode.VS_RAISE]?.fold != null)
         val capped = FlopBluffCap.apply(
@@ -162,9 +165,10 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
             foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
-            exempt = { h -> raiseResp.foldTotal / raiseResp.priorTotal > 1 - m.villainModel.mdf(potBefore, raiseSize) &&
+            exempt = { h -> (raiseResp.foldTotal / raiseResp.priorTotal >= 1 - m.villainModel.mdf(potBefore, raiseSize) + p.overrideOverfoldMargin &&
                 m.outs[h] >= p.exploitOverrideOuts &&
-                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * potBefore) },
+                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * potBefore))
+                .also { if (it) firedR[h] = true } },
         )
         if (!spot.heroInPosition) {
             val connected = m.texture.connectivity == Connectivity.HIGH || m.texture.volatility >= p.connectedVolatility
@@ -189,7 +193,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             mdf = mdf, potOdds = potOdds, minBet = minBet, donkRead = donkRead,
             freq = mapOf(FlopAction.FOLD to fFold, FlopAction.CALL to fCall, FlopAction.RAISE to fRaise),
             terms = mapOf(FlopAction.CALL to call, FlopAction.RAISE to raise), heroRange = m.hero, capped = capped,
-            maxFold = mdfFloor,
+            maxFold = mdfFloor, overrideFired = firedR,
         )
     }
 }
@@ -226,8 +230,11 @@ class FlopAnalysis(
     val geometricSize: Double = Double.NaN,
     /** Enforced maximum fold frequency (strict MDF vs min-bets / weakness donks); null = pure max EV. */
     val maxFold: Double? = null,
+    /** Combos whose bluff kept its frequency through PostflopMassiveExploitOverride (exempt from the cap). */
+    private val overrideFired: BooleanArray = BooleanArray(Combos.COUNT),
 ) {
     fun capped(combo: Int): Boolean = capped[combo]
+    fun overrideFired(combo: Int): Boolean = overrideFired[combo]
 
     val actions: List<FlopAction> get() = freq.keys.toList()
 

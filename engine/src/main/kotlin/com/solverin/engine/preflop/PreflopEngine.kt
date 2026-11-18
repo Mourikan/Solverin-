@@ -103,6 +103,9 @@ class PreflopEngine(
             if (raiseNode != null) {
                 valueEq[h] = math.valueEquity(h, raiseNode)
                 raiseAdj = policy.adjustedRaise(raiseTerms!![h].ev) - extraRaise
+                // VS_4BET: no 5-bet bluff jam into a 4-bettor folding less than fiveBetBluffMinFold.
+                if (key.scenario == Scenario.VS_4BET && ctx.policy.heroDiscipline && valueEq[h] < 0.5f &&
+                    raiseTerms[h].pFold < ctx.policy.fiveBetBluffMinFold) raiseAdj = Double.NEGATIVE_INFINITY
             }
             if (first != null) foldEq[h] = Blockers.foldProbability(h, first.response.fold, first.response.continueRange).toFloat()
             val callAdj = callTerms?.let { policy.adjustedCall(it[h].ev) - extraCall } ?: Double.NEGATIVE_INFINITY

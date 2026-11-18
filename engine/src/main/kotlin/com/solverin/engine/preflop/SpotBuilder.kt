@@ -1,6 +1,10 @@
 package com.solverin.engine.preflop
 
+import com.solverin.engine.core.HandClass
 import com.solverin.engine.core.Position
+import com.solverin.engine.eval.EquityTable
+import com.solverin.engine.model.HandRanking
+import com.solverin.engine.model.VillainNode
 import com.solverin.engine.model.VillainModel
 import com.solverin.engine.range.Scenario
 import com.solverin.engine.range.SpotKey
@@ -9,6 +13,30 @@ import com.solverin.engine.range.SpotKey
 class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel) {
     private val sz = ctx.sizing
     private val stack = ctx.effectiveStackBb
+    private val discipline = ctx.policy.heroDiscipline
+
+    /** A node lock that polarizes the villain's raise (valueShare < POLARIZED_LOCK) keeps his range as read. */
+    private fun polarized(node: VillainNode, v: Position, versus: Position) =
+        (ctx.locks.get(node, v, versus)?.valueShare ?: 1.0) < POLARIZED_LOCK
+
+    /**
+     * Endogenous collapse of a 4-bet / 5-bet range: only the strongest [top] share of all hands survives (5-bet: AA, KK,
+     * QQ, AKs and part of AKo; 4-bet: QQ+, AK and the next value hands). Hero discipline only (the population solve keeps
+     * the model's range).
+     */
+    private fun collapse(range: FloatArray, top: Double): FloatArray {
+        if (!discipline) return range
+        val out = FloatArray(range.size)
+        var left = top * HandClass.TOTAL_COMBOS
+        for (h in RANKING.byStrength) {
+            if (left <= 0.0) break
+            val c = HandClass.combos(h).toDouble()
+            val share = minOf(1.0, left / c)
+            out[h] = (range[h] * share).toFloat()
+            left -= c
+        }
+        return if (out.any { it > 0f }) out else range
+    }
 
     fun validate(key: SpotKey): Boolean {
         val h = key.hero; val v = key.villain
@@ -118,8 +146,11 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 val y = sz.threeBet(v, h)
                 val z = sz.fourBet(y)
                 val pot = y + z + blinds - h.blindBb - v.blindBb
-                val fourBetRange = vm.openerVs3Bet(v, h).raise
-                val call = CallNode(pot, y, z, listOf(fourBetRange), h.isInPositionVs(v), 0.0, 3)
+                val raw = vm.openerVs3Bet(v, h).raise
+                val fourBetRange = if (polarized(VillainNode.VS_3BET, v, h)) raw else collapse(raw, FOUR_BET_TOP)
+                val ip = h.isInPositionVs(v)
+                val call = CallNode(pot, y, z, listOf(fourBetRange), ip, 0.0, 3,
+                    realizationFactor = if (!ip && discipline) OOP_VS_FOUR_BET else 1.0)
                 val opp = Opponent(v, vm.fourBettorVsJam(v, h), z, stack, null, stack, h.isInPositionVs(v))
                 SpotNodes(call, RaiseNode(pot, y, stack, listOf(opp), 4))
             }
@@ -161,7 +192,9 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 val y = sz.threeBet(h, v)
                 val z = sz.fourBet(y)
                 val pot = z + stack + blinds - h.blindBb - v.blindBb
-                val call = CallNode(pot, z, stack, listOf(vm.threeBettorVs4Bet(v, h).raise), h.isInPositionVs(v), 0.0, 4)
+                val raw = vm.threeBettorVs4Bet(v, h).raise
+                val fiveBetRange = if (polarized(VillainNode.VS_4BET, v, h)) raw else collapse(raw, FIVE_BET_TOP)
+                val call = CallNode(pot, z, stack, listOf(fiveBetRange), h.isInPositionVs(v), 0.0, 4)
                 SpotNodes(call, null)
             }
         }
@@ -174,8 +207,18 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
         val sq = sz.squeeze(opener, 1)
         val pot = 2 * o + sq + blinds - opener.blindBb - caller.blindBb - squeezer.blindBb
         val ip = h.isInPositionVs(squeezer)
-        val call = CallNode(pot, o, sq, listOf(vm.squeezeRange(squeezer, opener)), ip, 0.0, 2)
+        val call = CallNode(pot, o, sq, listOf(vm.squeezeRange(squeezer, opener)), ip, 0.0, 2,
+            realizationFactor = if (h == caller && discipline) SANDWICHED_CALLER else 1.0)
         val opp = Opponent(squeezer, vm.squeezerVs4Bet(squeezer, opener), sq, stack, null, stack, ip)
         return SpotNodes(call, RaiseNode(pot, o, sz.fourBet(sq), listOf(opp), 3))
+    }
+
+    private companion object {
+        val RANKING = HandRanking(EquityTable.get())
+        const val POLARIZED_LOCK = 0.65
+        const val FIVE_BET_TOP = 0.022
+        const val FOUR_BET_TOP = 0.045
+        const val OOP_VS_FOUR_BET = 0.88
+        const val SANDWICHED_CALLER = 0.90
     }
 }

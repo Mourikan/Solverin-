@@ -370,6 +370,13 @@ class TurnMathEngine(
      */
     val tightened: Boolean get() = spot.condensedVillain && (spot.threeBetPot || spot.line == FlopLine.RAISE_CALL || responseFoldLocked)
 
+    /** Fold-rate multiplier on hero's bluffs / semi-bluffs: condensed + locked (0.65), called hero's flop bet (0.88), else 1. */
+    val persistence: Double get() = when {
+        tightened -> p.condensedFoldScale
+        spot.condensedVillain -> p.persistenceTightening
+        else -> 1.0
+    }
+
     fun exploitEligible(h: Int, range: FloatArray): Boolean {
         val o = outsVs(range)
         return (nutTotal > 0.0 && blockerFactor(h) < p.exploitBlocker) || (o.behind(h) && o.clean[h] >= p.exploitOverrideOuts)
@@ -445,7 +452,7 @@ class TurnMathEngine(
         val br = called(h, callRange, potBefore + a + (x - vInv), a, stack - x, aggressor = true)
         // Condensed villain (tightened): a bluff / semi-bluff (< 50% vs his calling range) gets less fold equity than his
         // unconditional profile says; value hands keep the profile (the extra callers would be weaker, never stronger).
-        val pf = if (tightened && br.equity < 0.5f) pr0[0] * ctx.policy.condensedFoldScale else pr0[0]
+        val pf = if (br.equity < 0.5f) pr0[0] * persistence else pr0[0]
         var pc = pr0[1] + (pr0[0] - pf); var pr = pr0[2]
         if (x >= stack) { pc += pr; pr = 0.0 }
         val evR = if (pr > 0) reraiseResponse(h, potBefore + a, x, vInv, a, resp.raise, level).value else 0.0
@@ -532,6 +539,8 @@ class TurnMathEngine(
             jamEv = pr[0] * potR + (pr[1] + pr[2]) * (ej * fin - (stack - x) - rk)
             jamEq = ej; rawJam = jamEv
             if (ej < 0.5 && jamEv < maxOf(0.0, callBranch.value) + p.stackOffBluffMarginBb) jamEv = Double.NEGATIVE_INFINITY
+            // A raise range is condensed: re-jamming over it needs stackOffEquity vs his calling range or a nut hand.
+            if (ej < p.stackOffEquity && !isNut(h) && !station) jamEv = Double.NEGATIVE_INFINITY
         }
         val shield = shielded(h)
         if (shield) jamEv = Double.NEGATIVE_INFINITY

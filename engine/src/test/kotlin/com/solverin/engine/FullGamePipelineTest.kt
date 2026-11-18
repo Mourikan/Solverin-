@@ -211,9 +211,12 @@ class FullGamePipelineTest {
                 println("H2 $tag $cx bluffs=%.2f share=%.3f callEv=%.2f | $bx bluffs=%.2f share=%.3f callEv=%.2f alpha=%.3f".format(
                     bx2, m.bluffShareFor(x, bet), ex.ev, by2, m.bluffShareFor(y, bet), ey.ev, a.alpha))
                 assertEquals(m.showdown.category(x), m.showdown.category(y), "same made-hand category")
-                // Anti-blocker rule: the catcher leaving more of villain's real bluffs never has the lower EV.
-                if (bx2 > by2 + 1e-9) { assertTrue(ex.ev >= ey.ev - 1e-9, "$cx keeps more bluffs → better catcher"); strict++ }
-                if (by2 > bx2 + 1e-9) { assertTrue(ey.ev >= ex.ev - 1e-9, "$bx keeps more bluffs → better catcher"); strict++ }
+                // Anti-blocker rule: the catcher facing the higher share of real bluffs (bluffs / (bluffs + value) left after
+                // its own card removal) never has the lower EV. Blockers change the bluff count.
+                val sx = m.bluffShareFor(x, bet); val sy = m.bluffShareFor(y, bet)
+                if (sx > sy + 1e-9) assertTrue(ex.ev >= ey.ev - 1e-9, "$cx faces more bluffs → better catcher")
+                if (sy > sx + 1e-9) assertTrue(ey.ev >= ex.ev - 1e-9, "$bx faces more bluffs → better catcher")
+                if (kotlin.math.abs(bx2 - by2) > 1e-9) strict++
             }
             assertTrue(strict > 0, "$tag: blockers change villain's bluff count")
             if (script === barrel) {
