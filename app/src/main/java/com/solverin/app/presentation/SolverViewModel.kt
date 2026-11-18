@@ -2,198 +2,311 @@ package com.solverin.app.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.solverin.engine.core.Card
+import com.solverin.engine.core.Position
 import com.solverin.engine.core.Stake
 import com.solverin.engine.math.PipelineBufferPool
-import com.solverin.engine.pipeline.HandLocks
 import com.solverin.engine.pipeline.HandPipelineEngine
-import com.solverin.engine.pipeline.HandResult
-import com.solverin.engine.pipeline.HandScript
-import com.solverin.engine.pipeline.PreflopAction
-import com.solverin.engine.pipeline.RiverScript
-import com.solverin.engine.pipeline.Seat
-import com.solverin.engine.pipeline.Street
-import com.solverin.engine.pipeline.StreetScript
+import com.solverin.engine.preflop.IsoRaiseInterceptor
+import com.solverin.engine.preflop.PreflopEngine
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Presentation bridge over [HandPipelineEngine]. Every intent updates the hand description and re-solves the hand
- * off the main thread on [computeDispatcher] (Dispatchers.Default by default); the newest result wins (stale
- * results of superseded intents are dropped). State is exposed as an immutable [StateFlow].
+ * Live-hand ViewModel. The user only enters villain actions and board cards; whenever the pointer reaches hero the
+ * oracle is solved off the main thread ([computeDispatcher]) and its Max-EV action is committed provisionally. The
+ * provisional hero action can be overridden from the oracle chips until the next input is registered, which
+ * implicitly confirms it. Every user input is undoable.
  */
 class SolverViewModel(
-    private val engine: HandPipelineEngine = HandPipelineEngine(),
+    preflopEngine: PreflopEngine = PreflopEngine(),
+    pipeline: HandPipelineEngine = HandPipelineEngine(preflopEngine),
+    iso: IsoRaiseInterceptor = IsoRaiseInterceptor(),
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val stackBb: Double = 100.0,
 ) : ViewModel() {
 
-    private data class Description(
-        val stake: Stake = Stake.NL50,
-        val preflop: PreflopAction? = null,
-        val heroSeat: Seat = Seat.OPENER,
-        val stackBb: Double = 100.0,
-        val locks: HandLocks = HandLocks(),
-        val heroHand: String? = null,
-        val flop: String? = null,
-        val turn: String? = null,
-        val river: String? = null,
-        val flopAction: StreetScript? = null,
-        val turnAction: StreetScript? = null,
-        val riverDecision: RiverScript = RiverScript(),
-    )
+    private val oracle = HeroOracle(preflopEngine, pipeline, iso)
+
+    private var stake = Stake.NL50
+    private var profile = VillainProfilePreset.POPULATION
+    private var flow = StreetFlowStateMachine.newHand(stackBb)
+    private val undoStack = ArrayDeque<FlowState>()
+    /** Table state right before hero's provisional action (null = no overridable hero action). */
+    private var heroSnapshot: FlowState? = null
+    private var committedKey: String? = null
+    private var result: OracleResult? = null
+    private var pickerRank: Int? = null
+    private var customAmount = 2.0
+    private var error: String? = null
+    private var computing = false
+    private var generation = 0L
+    private var job: Job? = null
 
     private val _state = MutableStateFlow(HandViewState())
     val state: StateFlow<HandViewState> = _state.asStateFlow()
 
-    private var description = Description()
-    private val solveLock = Mutex()
-    private var generation = 0L
-    private var job: Job? = null
+    init { publish() }
 
-    // ---- intents --------------------------------------------------------------------------------------------
+    // ---- settings ---------------------------------------------------------------------------------------------
 
-    /** Table setup: stake, preflop line, hero's seat, effective stack and optional node locks. Clears the board. */
-    fun configure(stake: Stake, preflop: PreflopAction, heroSeat: Seat, stackBb: Double = 100.0, locks: HandLocks = HandLocks()) {
-        description = description.copy(stake = stake, preflop = preflop, heroSeat = heroSeat, stackBb = stackBb, locks = locks,
-            flop = null, turn = null, river = null, flopAction = null, turnAction = null, riverDecision = RiverScript())
-        recompute()
+    fun setStake(s: Stake) { stake = s; reSolve() }
+
+    fun setProfile(p: VillainProfilePreset) { profile = p; reSolve() }
+
+    fun resetHand() {
+        cancelCompute()
+        flow = StreetFlowStateMachine.newHand(stackBb)
+        undoStack.clear(); heroSnapshot = null; committedKey = null; result = null; pickerRank = null; error = null
+        customAmount = 2.0
+        publish()
     }
 
-    /** Hero's hole cards, e.g. "AsKd". */
-    fun setHoleCards(cards: String) {
-        val c = cards.trim()
-        if (!validCards(c, 2)) { fail("Invalid hole cards '$cards'"); return }
-        description = description.copy(heroHand = c)
-        recompute()
+    // ---- card input (two-tap picker) --------------------------------------------------------------------------
+
+    fun pickRank(rank: Int) {
+        if (rank !in 0..12) return
+        pickerRank = if (pickerRank == rank) null else rank
+        publish()
     }
 
-    /** Deals the board: flop "Kd8c4h", then turn / river single cards. Later streets are cleared when an earlier one changes. */
-    fun setBoard(flop: String?, turn: String? = null, river: String? = null) {
-        if ((flop != null && !validCards(flop, 3)) || (turn != null && !validCards(turn, 1)) || (river != null && !validCards(river, 1))) {
-            fail("Invalid board"); return
+    /** Second tap: suit of the selected rank → hero hole card or board card depending on the phase. */
+    fun pickSuit(suit: Int) {
+        val r = pickerRank ?: run { fail("Pick a rank first"); return }
+        if (suit !in 0..3) return
+        pickerRank = null
+        pickCard(Card.id(r, suit))
+    }
+
+    fun pickCard(card: Int) {
+        when (flow.phase) {
+            StreetFlowPhase.PICK_HERO_CARDS -> input { StreetFlowStateMachine.pickHeroCard(it, card) }
+            StreetFlowPhase.DEAL_BOARD_CARDS -> input { StreetFlowStateMachine.dealCard(it, card) }
+            else -> fail(if (flow.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) "The ${flow.street.name} betting round is not closed yet" else "No card expected now")
         }
-        description = description.copy(flop = flop, turn = turn, river = river,
-            flopAction = if (flop == null) null else description.flopAction,
-            turnAction = if (turn == null) null else description.turnAction)
-        recompute()
     }
 
-    /** Registers the action sequence of [street] (flop / turn); the hand advances to the next dealt street. */
-    fun registerAction(street: Street, action: StreetScript) {
-        description = when (street) {
-            Street.FLOP -> description.copy(flopAction = action, turnAction = null)
-            Street.TURN -> description.copy(turnAction = action)
-            else -> { fail("Actions are registered on FLOP / TURN; use registerRiverDecision for the river"); return }
+    /** Quick edit of hole card [index] (before the hand starts). */
+    fun editHeroCard(index: Int) {
+        if (flow.phase != StreetFlowPhase.PICK_HERO_POSITION && flow.phase != StreetFlowPhase.PICK_HERO_CARDS) { fail("Hole cards are locked once the hand started"); return }
+        if (index !in flow.heroCards.indices) return
+        undoStack.addLast(flow)
+        flow = flow.copy(heroCards = flow.heroCards.filterIndexed { i, _ -> i != index }, phase = StreetFlowPhase.PICK_HERO_CARDS)
+        error = null
+        publish()
+    }
+
+    /** Quick edit of board card [index]: re-deal it if no action was registered after it. */
+    fun editBoardCard(index: Int) {
+        if (index !in flow.board.indices) return
+        val target = undoStack.lastOrNull { it.board.size == index && it.phase == StreetFlowPhase.DEAL_BOARD_CARDS }
+        if (target == null || flow.history.size != target.history.size) { fail("Actions were registered after that card: use Undo"); return }
+        cancelCompute()
+        while (undoStack.isNotEmpty() && undoStack.last() !== target) undoStack.removeLast()
+        flow = undoStack.removeLast()
+        heroSnapshot = null; committedKey = null; error = null
+        publish()
+    }
+
+    // ---- table input ------------------------------------------------------------------------------------------
+
+    fun setHeroPosition(p: Position) = input { StreetFlowStateMachine.setHeroPosition(it, p) }
+
+    /** Villain one-tap action (the hero's provisional action is confirmed by it). */
+    fun villainAct(option: VillainOption) {
+        if (flow.toAct != null && flow.toAct == flow.heroPosition) { fail("Hero's action is being solved"); return }
+        input { StreetFlowStateMachine.act(it, option.kind, option.toAmount) }
+    }
+
+    /** Villain bet / raise to the custom amount (all-in when it reaches the stack). */
+    fun villainCustom() {
+        val p = flow.toAct ?: return
+        if (p == flow.heroPosition) { fail("Hero's action is being solved"); return }
+        val cap = flow.seat(p).streetInvest + flow.stackLeft(p)
+        val kind = when {
+            customAmount >= cap - 1e-9 -> ActKind.ALL_IN
+            flow.maxBet <= 0.0 -> ActKind.BET
+            else -> ActKind.RAISE
         }
-        recompute()
+        input { StreetFlowStateMachine.act(it, kind, customAmount) }
     }
 
-    /** River decision: hero acts (null) or faces villain's bet of [villainBetFraction] of the pot. */
-    fun registerRiverDecision(villainBetFraction: Double?) {
-        description = description.copy(riverDecision = RiverScript(villainBetFraction))
-        recompute()
+    fun adjustCustom(steps: Int) {
+        val p = flow.toAct ?: return
+        val cap = flow.seat(p).streetInvest + flow.stackLeft(p)
+        val min = minOf(StreetFlowStateMachine.minRaiseTo(flow), cap)
+        customAmount = StreetFlowStateMachine.round1((customAmount + steps * STEP).coerceIn(min, cap))
+        publish()
     }
 
-    fun reset() {
-        description = Description(stake = description.stake, preflop = description.preflop, heroSeat = description.heroSeat,
-            stackBb = description.stackBb, locks = description.locks)
-        generation++
-        job?.cancel()
-        _state.value = HandViewState(stake = description.stake)
+    fun setCustomAmount(bb: Double) {
+        val p = flow.toAct ?: return
+        val cap = flow.seat(p).streetInvest + flow.stackLeft(p)
+        customAmount = StreetFlowStateMachine.round1(bb.coerceIn(minOf(StreetFlowStateMachine.minRaiseTo(flow), cap), cap))
+        publish()
     }
 
-    // ---- solving ------------------------------------------------------------------------------------------------
-
-    private fun validCards(s: String, n: Int): Boolean {
-        if (s.length != 2 * n) return false
-        return s.chunked(2).all { it[0] in RANKS && it[1].lowercaseChar() in SUITS } && s.chunked(2).map { it.lowercase() }.toSet().size == n
+    /** Overrides hero's provisional action with oracle option [key] (only before the next input). */
+    fun selectHeroAction(key: String) {
+        val snap = heroSnapshot ?: run { fail("No pending hero action to override"); return }
+        val opt = result?.options?.firstOrNull { it.key == key } ?: run { fail("Unknown option $key"); return }
+        runCatching { StreetFlowStateMachine.act(snap, opt.kind, opt.toAmount, isHero = true) }
+            .onSuccess { flow = it; committedKey = key; error = null; resetCustom(); publish() }
+            .onFailure { fail(it.message ?: "Illegal hero action") }
     }
 
-    private fun fail(msg: String) = _state.update { it.copy(error = msg, isComputing = false) }
-
-    /** Script of what is known so far: streets beyond the last registered action are not played yet. */
-    private fun script(d: Description): HandScript? {
-        val preflop = d.preflop ?: return null
-        val hand = d.heroHand ?: return null
-        val turn = if (d.flop != null && d.flopAction != null) d.turn else null
-        val river = if (turn != null && d.turnAction != null) d.river else null
-        return HandScript(d.stake, preflop, d.heroSeat, hand, d.flop, turn, river,
-            d.flopAction, if (turn != null) d.turnAction else null, d.riverDecision, d.stackBb, d.locks)
+    fun undo() {
+        if (undoStack.isEmpty()) return
+        cancelCompute()
+        flow = undoStack.removeLast()
+        heroSnapshot = null; committedKey = null; error = null; pickerRank = null
+        resetCustom()
+        settle()
     }
 
-    private fun recompute() {
-        val d = description
-        val s = try { script(d) } catch (e: IllegalArgumentException) { fail(e.message ?: "Invalid hand"); return }
-        if (s == null) {
-            _state.update { it.copy(stake = d.stake, heroCards = d.heroHand?.chunked(2) ?: emptyList(), board = board(d), error = null) }
+    // ---- internals --------------------------------------------------------------------------------------------
+
+    private inline fun input(transition: (FlowState) -> FlowState) {
+        if (computing && flow.toAct == flow.heroPosition && flow.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) { fail("Hero's action is being solved"); return }
+        val next = try { transition(flow) } catch (e: IllegalArgumentException) { fail(e.message ?: "Illegal input"); return } catch (e: IllegalStateException) { fail(e.message ?: "Illegal input"); return }
+        cancelCompute()
+        undoStack.addLast(flow)
+        if (undoStack.size > MAX_UNDO) undoStack.removeFirst()
+        flow = next
+        heroSnapshot = null; committedKey = null; error = null
+        resetCustom()
+        settle()
+    }
+
+    private fun resetCustom() {
+        val p = flow.toAct
+        customAmount = if (p == null) 2.0 else {
+            val cap = flow.seat(p).streetInvest + flow.stackLeft(p)
+            minOf(StreetFlowStateMachine.minRaiseTo(flow), cap)
+        }
+    }
+
+    private fun heroNeedsOracle(s: FlowState): Boolean =
+        s.heroPosition != null && s.heroCards.size == 2 && !s.heroFolded && s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER
+
+    /** After every input: solve hero's node; when hero is to act, commit the Max-EV action provisionally. */
+    private fun settle() {
+        if (!heroNeedsOracle(flow)) { publish(); return }
+        val snapshot = flow
+        val gen = ++generation
+        val st = stake; val pr = profile
+        computing = true
+        publish()
+        job = viewModelScope.launch {
+            val r = withContext(computeDispatcher) { oracle.compute(snapshot, st, pr) }
+            if (gen != generation) return@launch
+            computing = false
+            result = r
+            if (snapshot.toAct == snapshot.heroPosition) commitBest(snapshot, r)
+            publish()
+        }
+    }
+
+    private fun commitBest(snapshot: FlowState, r: OracleResult) {
+        val ordered = r.options.filter { it.evBb.isFinite() }.sortedByDescending { it.evBb } + r.options.filter { !it.evBb.isFinite() }
+        for (o in ordered) {
+            val applied = runCatching { StreetFlowStateMachine.act(snapshot, o.kind, o.toAmount, isHero = true) }.getOrNull() ?: continue
+            heroSnapshot = snapshot; committedKey = o.key; flow = applied
+            resetCustom()
             return
         }
-        val gen = ++generation
-        job?.cancel()
-        _state.update { it.copy(isComputing = true, error = null) }
-        job = viewModelScope.launch {
-            val result = runCatching {
-                withContext(computeDispatcher) { solveLock.withLock { engine.play(s) } }
-            }
-            if (gen != generation) return@launch
-            result.fold(
-                onSuccess = { r -> _state.value = render(d, r) },
-                onFailure = { e -> fail(e.message ?: e.javaClass.simpleName) },
-            )
-        }
+        error = "No legal hero action"
     }
 
-    private fun board(d: Description): List<String> =
-        listOfNotNull(d.flop?.chunked(2), d.turn?.let { listOf(it) }, d.river?.let { listOf(it) }).flatten()
+    private fun reSolve() {
+        val snap = heroSnapshot
+        if (snap != null) {
+            cancelCompute()
+            flow = snap; heroSnapshot = null; committedKey = null
+            settle()
+        } else if (heroNeedsOracle(flow)) {
+            cancelCompute(); settle()
+        } else publish()
+    }
 
-    private fun render(d: Description, r: HandResult): HandViewState {
-        val last = r.reports.last()
-        val names = (last.heroMix.keys + last.heroEv.keys).distinct()
-        val best = last.heroEv.filterValues { it.isFinite() }.maxByOrNull { it.value }?.key
-        val actions = names.map { n ->
-            ActionOption(n, last.heroMix[n] ?: 0f, last.heroEv[n] ?: Double.NaN, n == best)
-        }.sortedWith(compareByDescending<ActionOption> { it.isMaxEv }.thenByDescending { if (it.evBb.isNaN()) Double.NEGATIVE_INFINITY else it.evBb })
-        return HandViewState(
-            stake = d.stake,
-            heroCards = d.heroHand!!.chunked(2),
-            board = board(script(d)!!.let { s -> d.copy(turn = s.turn, river = s.river) }),
-            street = last.street,
-            status = r.status,
-            potBb = last.potBb,
-            heroStackBb = last.stacks.getValue(d.heroSeat),
-            effectiveStackBb = last.effectiveStackBb,
-            spr = last.spr,
-            betSizeFraction = last.heroBetFraction,
-            mdf = last.mdf,
-            actions = actions,
-            history = r.reports.map { rep ->
-                val b = rep.heroEv.filterValues { it.isFinite() }.maxByOrNull { it.value }
-                StreetSummary(rep.street, rep.line, rep.potBb, b?.key ?: "-", b?.value ?: 0.0)
+    private fun cancelCompute() {
+        generation++
+        job?.cancel(); job = null
+        computing = false
+    }
+
+    private fun fail(msg: String) { error = msg; publish() }
+
+    private fun publish() {
+        val s = flow
+        val hero = s.heroPosition
+        val r = result
+        val best = r?.best?.key
+        val toAct = s.toAct
+        val cap = toAct?.let { s.seat(it).streetInvest + s.stackLeft(it) } ?: stackBb
+        _state.value = HandViewState(
+            stake = stake,
+            profile = profile,
+            phase = s.phase,
+            street = s.street,
+            heroCards = s.heroCards.map { Card.toString(it) },
+            heroCardIds = s.heroCards,
+            heroPosition = hero?.short,
+            board = s.board.map { Card.toString(it) },
+            boardIds = s.board,
+            seats = if (hero == null) emptyList() else Position.entries.map { p ->
+                val seat = s.seat(p)
+                SeatView(p.short, seat.lastLabel ?: if (seat.inHand) "" else "Folded", seat.streetInvest, seat.inHand, seat.allIn, p == hero, p == toAct)
             },
-            heroShowdownEquity = r.heroShowdownEquity,
-            rakeAccruedBb = r.rakeAccruedBb,
-            latencyMs = r.totalNanos / 1e6,
-            isComputing = false,
-            error = null,
+            toAct = toAct?.short,
+            potBb = s.potBb,
+            effectiveStackBb = if (hero == null) stackBb else s.effectiveStackBb,
+            toCallBb = hero?.let { s.toCall(it) } ?: 0.0,
+            options = r?.options?.map { ActionOption(it.key, it.label, it.frequency, it.evBb, it.key == best, it.kind, it.toAmount) }.orEmpty(),
+            nodeLabel = r?.nodeLabel.orEmpty(),
+            approximate = r?.approximate ?: false,
+            latencyMs = r?.latencyMs ?: 0.0,
+            heroCommittedKey = committedKey,
+            heroOverridable = heroSnapshot != null,
+            villainOptions = if (toAct != null && toAct != hero) StreetFlowStateMachine.options(s) else emptyList(),
+            customAmountBb = customAmount,
+            customStepBb = STEP,
+            minCustomBb = if (toAct == null) 1.0 else minOf(StreetFlowStateMachine.minRaiseTo(s), cap),
+            maxCustomBb = cap,
+            cardsNeeded = s.cardsNeeded,
+            pickerRank = pickerRank,
+            usedCards = s.usedCards,
+            canUndo = undoStack.isNotEmpty(),
+            isComputing = computing,
+            error = error,
+            history = s.history.map { "${it.street.name.take(1)} ${it.position.short}${if (it.isHero) "★" else ""} ${label(it)}" },
         )
     }
 
+    private fun label(a: ActionRecord): String = when (a.kind) {
+        ActKind.FOLD -> "fold"
+        ActKind.CHECK -> "check"
+        ActKind.CALL -> "call ${StreetFlowStateMachine.fmt(a.toAmount)}"
+        ActKind.LIMP -> "limp"
+        ActKind.BET -> "bet ${StreetFlowStateMachine.fmt(a.toAmount)}"
+        ActKind.RAISE -> "raise ${StreetFlowStateMachine.fmt(a.toAmount)}"
+        ActKind.ALL_IN -> "all-in ${StreetFlowStateMachine.fmt(a.toAmount)}"
+    }
+
     override fun onCleared() {
-        job?.cancel()
+        cancelCompute()
         PipelineBufferPool.clearAll()
         super.onCleared()
     }
 
     private companion object {
-        const val RANKS = "23456789TJQKA"
-        const val SUITS = "cdhs"
+        const val STEP = 0.5
+        const val MAX_UNDO = 200
     }
 }
