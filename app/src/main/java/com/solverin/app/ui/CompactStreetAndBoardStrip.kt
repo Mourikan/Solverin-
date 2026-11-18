@@ -129,16 +129,16 @@ fun CardSlot(card: Int?, width: Dp, enabled: Boolean, hero: Boolean = false, onC
     val shape = RoundedCornerShape(5.dp)
     Box(
         Modifier.width(width).aspectRatio(0.72f).clip(shape)
-            .background(if (card == null) CakeColors.Background else CakeColors.TextPrimary)
-            .border(1.dp, if (hero) CakeColors.Purple else CakeColors.CardBorder, shape)
+            .background(if (card == null) CakeColors.Background else CakeColors.Card)
+            .border(1.dp, if (hero || card != null) CakeColors.Purple else CakeColors.CardBorder, shape)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         if (card != null) {
             val suit = Card.suit(card)
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text(Card.RANK_CHARS[Card.rank(card)].toString(), color = CakeColors.Ink, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, lineHeight = 12.sp)
-                Text(CakeColors.suitSymbols[suit], color = if (suit == 3) CakeColors.Ink else CakeColors.suitColors[suit], fontSize = 11.sp, lineHeight = 11.sp)
+                Text(Card.RANK_CHARS[Card.rank(card)].toString(), color = CakeColors.TextPrimary, fontWeight = FontWeight.Black, fontSize = 12.sp, lineHeight = 12.sp)
+                SuitVectorIcon(Suit.of(suit), Modifier.fillMaxWidth(0.62f).aspectRatio(1f))
             }
         }
     }

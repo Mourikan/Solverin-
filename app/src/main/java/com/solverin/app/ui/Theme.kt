@@ -61,9 +61,6 @@ object CakeColors {
 
     fun lip(c: Color): Color = if (c == Cyan) CyanLip else lerp(c, Color.Black, 0.35f)
 
-    /** Four-colour deck: clubs, diamonds, hearts, spades (engine suit order "cdhs"). */
-    val suitColors = listOf(Mint, Cyan, Pink, TextPrimary)
-    val suitSymbols = listOf("♣", "♦", "♥", "♠")
 }
 
 object CakeShapes {
@@ -99,23 +96,19 @@ fun CakePanel(modifier: Modifier = Modifier, content: @Composable BoxScope.() ->
     )
 }
 
-/** Cake button: 14dp corners with a 3dp darker bottom lip that collapses when pressed. */
+/** Cake button: 14dp corners with a 3dp darker bottom lip that collapses when pressed; arbitrary content. */
 @Composable
-fun CakeButton(
-    text: String,
+fun CakeButtonBox(
     color: Color,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    textColor: Color = CakeColors.Ink,
-    fontSize: TextUnit = 14.sp,
-    fontFamily: FontFamily? = null,
     lip: Dp = 3.dp,
-    maxLines: Int = 2,
+    lipColor: Color = CakeColors.lip(color),
     onClick: () -> Unit,
+    content: @Composable BoxScope.() -> Unit,
 ) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val lipColor = CakeColors.lip(color)
     Box(
         modifier
             .alpha(if (enabled) 1f else 0.35f)
@@ -130,13 +123,31 @@ fun CakeButton(
                 .clip(CakeShapes.Button)
                 .background(color),
             contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text, color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = fontSize, fontFamily = fontFamily,
-                textAlign = TextAlign.Center, maxLines = maxLines, overflow = TextOverflow.Ellipsis, lineHeight = fontSize * 1.05f,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
-        }
+            content = content,
+        )
+    }
+}
+
+/** Text Cake button (see [CakeButtonBox]). */
+@Composable
+fun CakeButton(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    textColor: Color = CakeColors.Ink,
+    fontSize: TextUnit = 14.sp,
+    fontFamily: FontFamily? = null,
+    lip: Dp = 3.dp,
+    maxLines: Int = 2,
+    onClick: () -> Unit,
+) {
+    CakeButtonBox(color, modifier, enabled, lip, onClick = onClick) {
+        Text(
+            text, color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = fontSize, fontFamily = fontFamily,
+            textAlign = TextAlign.Center, maxLines = maxLines, overflow = TextOverflow.Ellipsis, lineHeight = fontSize * 1.05f,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
     }
 }
 

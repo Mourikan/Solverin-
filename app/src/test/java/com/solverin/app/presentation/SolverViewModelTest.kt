@@ -493,4 +493,141 @@ class SolverViewModelTest {
         assertEquals(0.5 + 1.0 + 2.5 + 2 * heroTo, s.potBb, 1e-9)
         assertTrue(s.history.any { it == "P UTG fold" } && s.history.any { it == "P SB fold" } && s.history.any { it == "P BB fold" })
     }
+
+    /** Invariant: once hero's assumed action bets / raises, the villain to act faces it (CALL present, CHECK absent). */
+    private fun assertVillainFacesHeroBet(s: HandViewState) {
+        val committed = s.committedAction ?: return
+        if (s.phase != StreetFlowPhase.VILLAIN_ACTION_STEPPER || s.actingSeat == null || !s.heroOverridable) return
+        if (committed.kind != ActKind.BET && committed.kind != ActKind.RAISE && committed.kind != ActKind.ALL_IN) return
+        val call = s.villainOptions.firstOrNull { it.kind == ActKind.CALL }
+        assertNotNull("CALL missing vs hero ${committed.label}: ${s.villainOptions.map { it.label }}", call)
+        assertTrue("CHECK offered vs hero ${committed.label}", s.villainOptions.none { it.kind == ActKind.CHECK })
+        assertEquals(s.streetMaxBetBb, call!!.toAmount, 1e-9)
+        assertTrue(s.recommendedAmountBb > 0.0 || s.manualDeviation)
+    }
+
+    @Test
+    fun whenHeroOptimalActionIsBet_villainAlwaysHasCallOptionAndNeverCheck() = runTest(dispatcher) {
+        val rng = java.util.Random(7)
+        val deck = (0 until 52).toList()
+        var heroBets = 0
+        val streetsSeen = HashSet<TableStreet>()
+        repeat(14) { hand ->
+            val vm = vm()
+            val cards = deck.shuffled(rng)
+            vm.pickCard(cards[0]); vm.pickCard(cards[1]); advanceUntilIdle()
+            val heroPos = listOf(Position.BTN, Position.CO, Position.BB, Position.SB)[hand % 4]
+            vm.setHeroPosition(heroPos); advanceUntilIdle()
+            // Preflop: one villain opens / calls, the rest fold by omission; hero forced to continue.
+            if (vm.state.value.heroFoldPending) vm.continueInHand()
+            vm.assign("Open 2.5"); advanceUntilIdle()              // UTG opens
+            if (vm.state.value.heroFoldPending) vm.continueInHand()
+            advanceUntilIdle()
+            if (vm.state.value.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER && vm.state.value.street == TableStreet.PREFLOP) {
+                val callOpt = vm.state.value.villainOptions.firstOrNull { it.kind == ActKind.CALL }
+                if (callOpt != null) { vm.assignSeatAction(callOpt); advanceUntilIdle() }
+                if (vm.state.value.heroFoldPending) vm.continueInHand()
+                vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+                if (vm.state.value.heroFoldPending) { vm.continueInHand(); advanceUntilIdle() }
+            }
+            var next = 2
+            var guard = 0
+            while (guard++ < 40) {
+                val s = vm.state.value
+                assertVillainFacesHeroBet(s)
+                if (s.committedAction?.let { it.kind == ActKind.BET || it.kind == ActKind.RAISE } == true && s.heroOverridable && s.actingSeat != null) {
+                    heroBets++; streetsSeen += s.street
+                }
+                when {
+                    s.heroFoldPending -> { vm.continueInHand(); advanceUntilIdle() }
+                    s.phase == StreetFlowPhase.DEAL_BOARD_CARDS -> {
+                        while (cards[next] in s.usedCards) next++
+                        vm.pickCard(cards[next++]); advanceUntilIdle()
+                    }
+                    s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER && s.villainOptions.isNotEmpty() -> {
+                        val o = s.villainOptions.firstOrNull { it.kind == ActKind.CALL } ?: s.villainOptions.first { it.kind == ActKind.CHECK }
+                        vm.villainAct(o); advanceUntilIdle()
+                    }
+                    else -> break
+                }
+            }
+        }
+        assertTrue("hero never bet in the sweep", heroBets > 0)
+        assertTrue("bets seen on $streetsSeen", streetsSeen.any { it != TableStreet.PREFLOP })
+    }
+
+    @Test
+    fun threeBetPotPreflop_doesNotRequireManualFoldOnSeatAfterThreeBettor() = runTest(dispatcher) {
+        // (a) Hero opens UTG, BTN 3-bets: SB / BB fold by omission, hero's answer is auto-assumed at once.
+        var vm = vm()
+        pickCards(vm, "Ks", "Kd")
+        vm.setHeroPosition(Position.UTG); advanceUntilIdle()
+        assertEquals("RAISE", vm.state.value.heroCommittedKey)
+        vm.selectMatrixSeat(Position.BTN); advanceUntilIdle()   // MP, CO fold by omission
+        vm.assign("3-Bet IP"); advanceUntilIdle()
+        var s = vm.state.value
+        assertFalse(s.seats.first { it.label == "SB" }.inHand)
+        assertFalse(s.seats.first { it.label == "BB" }.inHand)
+        assertOracle(s)
+        assertTrue(s.nodeLabel, s.nodeLabel.contains("VS 3BET"))
+        if (s.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        s = vm.state.value
+        // Hero calls: nobody else invested voluntarily, the round closes straight to the flop.
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(listOf("UTG", "BTN"), s.seats.filter { it.inHand }.map { it.label })
+
+        // (b) Villain opens, another villain 3-bets, hero behind: seats between fold by omission.
+        vm = vm()
+        pickCards(vm, "7c", "2d")
+        vm.setHeroPosition(Position.BB); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()              // UTG
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle()     // MP folds
+        vm.assign("3-Bet IP"); advanceUntilIdle()              // CO 3-bet: BTN, SB fold by omission
+        s = vm.state.value
+        assertFalse(s.seats.first { it.label == "BTN" }.inHand)
+        assertFalse(s.seats.first { it.label == "SB" }.inHand)
+        assertNotNull(s.heroCommittedKey)
+        // Hero flats the 3-bet in the real game; only UTG (already invested voluntarily) is still pending.
+        if (s.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        s = vm.state.value
+        assertTrue(s.canAdvancePreflop || s.phase == StreetFlowPhase.DEAL_BOARD_CARDS)
+        if (s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) {
+            assertEquals("UTG", s.actingSeat)
+            vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        }
+        s = vm.state.value
+        assertTrue(s.phase == StreetFlowPhase.DEAL_BOARD_CARDS || s.phase == StreetFlowPhase.HAND_COMPLETE)
+        assertEquals(listOf("CO", "BB"), s.seats.filter { it.inHand }.map { it.label })
+    }
+
+    @Test
+    fun heroOracleBannerState_alwaysExposesExplicitAmountInBb() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ah", "Qh")
+        vm.setHeroPosition(Position.CO); advanceUntilIdle()
+        vm.villain("Fold"); advanceUntilIdle(); vm.villain("Fold"); advanceUntilIdle()
+        var s = vm.state.value
+        fun check(st: HandViewState) {
+            assertTrue(st.options.isNotEmpty())
+            for (o in st.options) {
+                assertTrue("${o.label} amount", o.amountBb.isFinite() && o.amountBb >= 0.0)
+                assertTrue("${o.label} short name", o.shortName.isNotBlank() && o.shortName.length <= 9)
+                when (o.kind) {
+                    ActKind.BET, ActKind.RAISE, ActKind.ALL_IN -> { assertTrue(o.amountBb > 0.0); assertTrue(o.potPct > 0.0) }
+                    ActKind.CALL, ActKind.LIMP -> assertTrue(o.amountBb > 0.0)
+                    ActKind.CHECK, ActKind.FOLD -> assertEquals(0.0, o.amountBb, 1e-9)
+                }
+            }
+            val best = st.maxEvAction!!
+            assertEquals(best.amountBb, st.recommendedAmountBb, 1e-9)
+        }
+        check(s)
+        assertEquals("OPEN", s.maxEvAction!!.shortName)
+        assertEquals(2.5, s.recommendedAmountBb, 1e-9)
+        vm.villain("3-Bet IP"); advanceUntilIdle()   // BTN 3-bets 7.5
+        s = vm.state.value
+        check(s)
+        s.options.firstOrNull { it.kind == ActKind.CALL }?.let { assertEquals(7.5 - 2.5, it.amountBb, 1e-9) }
+        s.options.firstOrNull { it.kind == ActKind.RAISE }?.let { assertEquals("4-BET", it.shortName) }
+    }
 }

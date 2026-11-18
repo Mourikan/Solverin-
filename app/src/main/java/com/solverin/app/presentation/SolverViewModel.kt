@@ -222,7 +222,7 @@ class SolverViewModel(
     fun assignSeatAction(option: VillainOption) {
         if (heroFoldPending()) { if (!continueInHand()) return }
         val target = matrixSeat ?: flow.toAct ?: run { fail("No hay asiento seleccionado"); return }
-        input { s ->
+        input(chainRaisedPot = true) { s ->
             val at = requireNotNull(StreetFlowStateMachine.foldUntil(s, target)) { "${target.short} no puede actuar ahora" }
             StreetFlowStateMachine.act(at, option.kind, option.toAmount)
         }
@@ -306,13 +306,24 @@ class SolverViewModel(
         return minOf(StreetFlowStateMachine.minRaiseTo(at), cap) to cap
     }
 
-    private inline fun input(transition: (FlowState) -> FlowState) {
+    /**
+     * Applies one user input (undoable). With [chainRaisedPot], a villain preflop 3-bet / 4-bet+ makes every villain
+     * that has not put chips in voluntarily fold by omission up to hero's turn (separate undo step, so a cold 4-bet of
+     * one of those seats can still be entered after Undo).
+     */
+    private inline fun input(chainRaisedPot: Boolean = false, transition: (FlowState) -> FlowState) {
         if (computing && flow.toAct == flow.heroPosition && flow.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) { fail("Resolviendo la acción del héroe"); return }
         val next = try { transition(flow) } catch (e: IllegalArgumentException) { fail(e.message ?: "Entrada ilegal"); return } catch (e: IllegalStateException) { fail(e.message ?: "Entrada ilegal"); return }
         cancelCompute()
         undoStack.addLast(flow)
-        if (undoStack.size > MAX_UNDO) undoStack.removeFirst()
-        flow = next
+        var settled = next
+        val last = next.history.lastOrNull()
+        if (chainRaisedPot && last != null && !last.isHero && last.aggressive && last.street == TableStreet.PREFLOP && last.raiseLevel >= 2) {
+            val folded = StreetFlowStateMachine.foldNonParticipantsUntilHero(next)
+            if (folded !== next) { undoStack.addLast(next); settled = folded }
+        }
+        while (undoStack.size > MAX_UNDO) undoStack.removeFirst()
+        flow = settled
         heroSnapshot = null; committedKey = null; error = null
         matrixSeat = null; autoAdvance = false; heroChain = false
         resetCustom()
@@ -397,6 +408,13 @@ class SolverViewModel(
         // Matrix seat: options are those of that seat once the villains before it folded by omission.
         val stepper = matrixSeat?.let { StreetFlowStateMachine.foldUntil(live, it) } ?: live
         val streetActed = s.streetRecords(s.street).map { it.position }.toSet()
+        // Hero's decision node: the state before the assumed action, or the live state for a preview.
+        val node = heroSnapshot ?: s
+        val optionViews = r?.options?.map { o ->
+            val (amount, pct) = amountOf(o, node)
+            ActionOption(o.key, o.label, o.frequency, o.evBb, if (best != null && o.evBb.isFinite()) o.evBb - best.evBb else Double.NaN,
+                o.key == best?.key, o.kind, o.toAmount, shortName(o, node, pct), amount, pct)
+        }.orEmpty()
         val toAct = stepper.toAct
         val cap = toAct?.let { stepper.seat(it).streetInvest + stepper.stackLeft(it) } ?: tableStack
         _state.value = HandViewState(
@@ -425,10 +443,12 @@ class SolverViewModel(
             tableStackBb = tableStack,
             selectedSeat = selectedSeat?.short,
             toCallBb = hero?.let { s.toCall(it) } ?: 0.0,
-            options = r?.options?.map {
-                ActionOption(it.key, it.label, it.frequency, it.evBb, if (best != null && it.evBb.isFinite()) it.evBb - best.evBb else Double.NaN,
-                    it.key == best?.key, it.kind, it.toAmount)
-            }.orEmpty(),
+            options = optionViews,
+            streetMaxBetBb = stepper.maxBet,
+            heroCommittedBb = hero?.let { s.seat(it).streetInvest } ?: 0.0,
+            recommendedAmountBb = optionViews.firstOrNull { it.isMaxEv }?.amountBb ?: 0.0,
+            recommendedPotPct = optionViews.firstOrNull { it.isMaxEv }?.potPct ?: 0.0,
+            oraclePreview = r != null && committedKey == null,
             nodeLabel = r?.nodeLabel.orEmpty(),
             approximate = r?.approximate ?: false,
             latencyMs = r?.latencyMs ?: 0.0,
@@ -450,6 +470,46 @@ class SolverViewModel(
             error = error,
             history = s.history.map { "${it.street.name.take(1)} ${it.position.short}${if (it.isHero) "★" else ""} ${label(it)}" },
         )
+    }
+
+    /** Explicit bb amount (street total for aggression, chips added for call / limp) and size as a pot fraction. */
+    private fun amountOf(o: OracleOption, node: FlowState): Pair<Double, Double> {
+        val hero = node.heroPosition ?: return 0.0 to 0.0
+        val invested = node.seat(hero).streetInvest
+        return when (o.kind) {
+            ActKind.FOLD, ActKind.CHECK -> 0.0 to 0.0
+            ActKind.CALL, ActKind.LIMP -> StreetFlowStateMachine.round1(maxOf(0.0, o.toAmount - invested)) to 0.0
+            ActKind.BET, ActKind.RAISE, ActKind.ALL_IN ->
+                o.toAmount to if (node.potBb > 0.0) maxOf(0.0, o.toAmount - invested) / node.potBb else 0.0
+        }
+    }
+
+    /** Short banner name: OPEN / ISO-RAISE / 3-BET / 4-BET / C-BET / BARREL / OVERBET / DONK / PROBE / RAISE / ALL-IN … */
+    private fun shortName(o: OracleOption, node: FlowState, potPct: Double): String {
+        val hero = node.heroPosition
+        return when (o.kind) {
+            ActKind.FOLD -> "FOLD"
+            ActKind.CHECK -> "CHECK"
+            ActKind.CALL -> "CALL"
+            ActKind.LIMP -> "LIMP"
+            ActKind.ALL_IN -> "ALL-IN"
+            ActKind.BET, ActKind.RAISE -> when {
+                node.street == TableStreet.PREFLOP -> when {
+                    o.key == "ISO_RAISE" -> "ISO-RAISE"
+                    node.raiseLevel == 0 -> "OPEN"
+                    else -> "${node.raiseLevel + 2}-BET"
+                }
+                node.maxBet > 0.0 -> if (node.raiseLevel <= 1) "RAISE" else "${node.raiseLevel + 1}-BET"
+                potPct > 1.0 + 1e-9 -> "OVERBET"
+                o.key == "DONK" -> "DONK"
+                o.key == "PROBE" -> "PROBE"
+                o.key == "SECOND_BARREL" || o.key == "TRIPLE_BARREL" -> "BARREL"
+                o.key == "DELAYED_CBET" || o.key == "DELAYED_BET" -> "C-BET"
+                node.history.lastOrNull { it.aggressive && it.street != node.street }?.position == hero ->
+                    if (node.street == TableStreet.FLOP) "C-BET" else "BARREL"
+                else -> "BET"
+            }
+        }
     }
 
     private fun label(a: ActionRecord): String = when (a.kind) {

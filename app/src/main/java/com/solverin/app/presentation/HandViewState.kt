@@ -15,6 +15,14 @@ data class ActionOption(
     val isMaxEv: Boolean,
     val kind: ActKind,
     val toAmountBb: Double,
+    /** Short action name for the banner (OPEN, ISO-RAISE, 3-BET, C-BET, BARREL, OVERBET, ALL-IN, CALL, CHECK, FOLD…). */
+    val shortName: String = key,
+    /**
+     * Explicit amount in bb: street total for bets / raises / all-in, chips to add for a call / limp, 0 for check / fold.
+     */
+    val amountBb: Double = 0.0,
+    /** Bet / raise size as a fraction of the pot before it (0 for passive actions). */
+    val potPct: Double = 0.0,
 )
 
 /** One seat of the hand (strip chips and preflop matrix cards). */
@@ -66,6 +74,15 @@ data class HandViewState(
     /** Seat whose stack the stack selector edits (null = whole table). */
     val selectedSeat: String? = null,
     val toCallBb: Double = 0.0,
+    /** Highest street commitment the player to act must match (includes hero's assumed bet / raise). */
+    val streetMaxBetBb: Double = 0.0,
+    /** Hero's chips committed on the current street (assumed action included). */
+    val heroCommittedBb: Double = 0.0,
+    /** Explicit bb amount of the Max-EV action (see [ActionOption.amountBb]); never empty. */
+    val recommendedAmountBb: Double = 0.0,
+    val recommendedPotPct: Double = 0.0,
+    /** Oracle shows hero's NEXT node (hero has not acted yet on it): its bet is not yet in front of the villains. */
+    val oraclePreview: Boolean = false,
     /** Oracle options of hero's current / last decision node (Nash frequency + exact EV in bb). */
     val options: List<ActionOption> = emptyList(),
     val nodeLabel: String = "",

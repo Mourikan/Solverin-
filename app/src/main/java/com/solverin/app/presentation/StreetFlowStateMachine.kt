@@ -238,6 +238,22 @@ object StreetFlowStateMachine {
         return c
     }
 
+    /**
+     * Auto-fold by omission in raised pots: villains with no voluntary action on this street pass until hero's turn;
+     * it stops at a villain who already put chips in voluntarily (that answer must be entered) or when the round ends.
+     */
+    fun foldNonParticipantsUntilHero(s: FlowState): FlowState {
+        var c = s
+        repeat(MAX_IMPLICIT_STEPS) {
+            if (c.phase != StreetFlowPhase.VILLAIN_ACTION_STEPPER) return c
+            val p = c.toAct ?: return c
+            if (p == c.heroPosition) return c
+            if (c.streetRecords(c.street).any { it.position == p }) return c
+            c = implicitPass(c)
+        }
+        return c
+    }
+
     /** True when [p] is still to act on the current street (the matrix can assign it an action). */
     fun canStillAct(s: FlowState, p: Position): Boolean =
         s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER && needsAction(s, p)

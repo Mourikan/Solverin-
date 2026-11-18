@@ -1,5 +1,6 @@
 package com.solverin.app.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -62,8 +63,12 @@ fun TwoTapCardPicker(
                 for (suit in 3 downTo 0) {
                     val r = state.pickerRank
                     val ok = r != null && Card.id(r, suit) !in state.usedCards
-                    CakeButton(CakeColors.suitSymbols[suit], CakeColors.suitColors[suit], Modifier.weight(1f).fillMaxHeight(),
-                        enabled = ok, fontSize = 34.sp) { onSuit(suit) }
+                    val st = Suit.of(suit)
+                    CakeButtonBox(CakeColors.Card, Modifier.weight(1f).fillMaxHeight()
+                        .border(1.5.dp, if (suit == 3) CakeColors.Purple else st.color, CakeShapes.Button),
+                        enabled = ok, lipColor = CakeColors.Background, onClick = { onSuit(suit) }) {
+                        SuitVectorIcon(st, Modifier.fillMaxSize(0.62f))
+                    }
                 }
             }
         }
