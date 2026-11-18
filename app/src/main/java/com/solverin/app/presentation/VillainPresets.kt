@@ -15,21 +15,19 @@ import com.solverin.engine.turn.TurnNodeLock
 import com.solverin.engine.turn.TurnNodeLocks
 import com.solverin.engine.turn.TurnVillainNode
 
-/** Villain profile selector of the top bar → node locks on every street (POPULATION = no lock). */
+/** Villain profile selector (node lock of the active villain) → node locks on every street (POBLACIÓN = no lock). */
 enum class VillainProfilePreset(val label: String) {
-    POPULATION("Population"), STATION("Station"), NIT("Nit"), MANIAC("Maniac"), OVERFOLDER("Overfolder");
+    POPULATION("POBLACIÓN"), STATION("CALLING STATION"), NIT("NIT / OVERFOLDER"), MANIAC("MANIAC");
 
     val locks: HandLocks by lazy {
         when (this) {
             POPULATION -> HandLocks()
             STATION -> build(defendCall = 0.70, defendRaise = 0.04, foldBet = 0.12, raiseBet = 0.04, foldRaise = 0.20, reraise = 0.04,
                 foldJam = 0.25, betFreq = 0.30, valueShare = 0.85, elasticity = 0.95, riverBluff = 0.15)
-            NIT -> build(defendCall = 0.15, defendRaise = 0.03, foldBet = 0.65, raiseBet = 0.05, foldRaise = 0.75, reraise = 0.05,
-                foldJam = 0.80, betFreq = 0.30, valueShare = 0.95, elasticity = 0.30, riverBluff = 0.05)
+            NIT -> build(defendCall = 0.13, defendRaise = 0.03, foldBet = 0.72, raiseBet = 0.04, foldRaise = 0.78, reraise = 0.04,
+                foldJam = 0.83, betFreq = 0.32, valueShare = 0.93, elasticity = 0.32, riverBluff = 0.10)
             MANIAC -> build(defendCall = 0.45, defendRaise = 0.25, foldBet = 0.20, raiseBet = 0.35, foldRaise = 0.20, reraise = 0.35,
                 foldJam = 0.10, betFreq = 0.90, valueShare = 0.40, elasticity = 0.80, riverBluff = 0.60)
-            OVERFOLDER -> build(defendCall = 0.12, defendRaise = 0.02, foldBet = 0.75, raiseBet = 0.04, foldRaise = 0.80, reraise = 0.03,
-                foldJam = 0.85, betFreq = 0.35, valueShare = 0.90, elasticity = 0.35, riverBluff = 0.20)
         }
     }
 

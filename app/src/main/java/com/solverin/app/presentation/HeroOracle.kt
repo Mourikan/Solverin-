@@ -5,6 +5,15 @@ import com.solverin.engine.core.HandClass
 import com.solverin.engine.core.Position
 import com.solverin.engine.core.Stake
 import com.solverin.engine.eval.RangeEquity
+import com.solverin.engine.flop.Combos
+import com.solverin.engine.flop.FlopAction
+import com.solverin.engine.flop.FlopPolicy
+import com.solverin.engine.math.RakeModel
+import com.solverin.engine.pipeline.StreetReport
+import com.solverin.engine.river.RiverAction
+import com.solverin.engine.river.RiverPolicy
+import com.solverin.engine.turn.TurnAction
+import com.solverin.engine.turn.TurnPolicy
 import com.solverin.engine.pipeline.HandPipelineEngine
 import com.solverin.engine.pipeline.HandScript
 import com.solverin.engine.pipeline.PreflopAction
@@ -32,12 +41,50 @@ data class OracleOption(
     val toAmount: Double,
 )
 
+/**
+ * Solved-node mathematics behind hero's Max-EV action (inputs of [SpanishStrategyExplainer]). Null fields = the node
+ * does not produce that term (e.g. no realization on the river, no ΔNuts preflop).
+ */
+data class NodeMath(
+    val street: TableStreet,
+    val potBb: Double,
+    val effectiveStackBb: Double,
+    val spr: Double,
+    /** Raw equity of hero's hand vs the continuing range (0..1). */
+    val equity: Double? = null,
+    /** Equity realization factor R_real (preflop) / R_post (flop, turn). */
+    val realization: Double? = null,
+    val rangeAdvantage: Double? = null,
+    val nutAdvantage: Double? = null,
+    val mdf: Double? = null,
+    val potOdds: Double? = null,
+    /** Villain's real P(fold) vs hero's aggression. */
+    val pFoldVillain: Double? = null,
+    val blockerFactor: Double? = null,
+    val bNut: Double? = null,
+    val bFold: Double? = null,
+    /** Rake charged in the chosen branch (bb). */
+    val rakeBb: Double? = null,
+    val rakeRate: Double = 0.0,
+    val rakeCapBb: Double = 0.0,
+    /** Aggression of this hand cut by the vulnerability brake / four-flush shield / bluff cap. */
+    val aggressionCapped: Boolean = false,
+    /** PostflopMassiveExploitOverride margin reached (aggressive Max-EV gap ≥ the street threshold). */
+    val overrideActive: Boolean = false,
+    val overrideThresholdBb: Double? = null,
+    val geometricSize: Double? = null,
+    val coldCallVerdict: String? = null,
+    val bluffShare: Double? = null,
+    val alpha: Double? = null,
+)
+
 /** Hero's decision at the current node; [approximate] = the live line was projected onto the closest engine line. */
 data class OracleResult(
     val nodeLabel: String,
     val options: List<OracleOption>,
     val approximate: Boolean,
     val latencyMs: Double,
+    val math: NodeMath? = null,
 ) {
     val best: OracleOption? get() = options.filter { it.evBb.isFinite() }.maxByOrNull { it.evBb }
 }
@@ -61,24 +108,37 @@ class HeroOracle(
     fun compute(s: FlowState, stake: Stake, profile: VillainProfilePreset): OracleResult {
         val t0 = System.nanoTime()
         val r = if (s.street == TableStreet.PREFLOP) {
-            runCatching { preflopNode(s, stake, profile) }.getOrElse { potOddsFallback(s, "Preflop fallback") }
+            runCatching { preflopNode(s, stake, profile) }.getOrElse { potOddsFallback(s, "Preflop fallback", stake) }
         } else {
             runCatching { postflopNode(s, stake, profile, simplified = false) }
                 .recoverCatching { postflopNode(s, stake, profile, simplified = true) }
-                .getOrElse { potOddsFallback(s, "${s.street.name} fallback") }
+                .getOrElse { potOddsFallback(s, "${s.street.name} fallback", stake) }
         }
-        return r.copy(latencyMs = (System.nanoTime() - t0) / 1e6)
+        return r.copy(latencyMs = (System.nanoTime() - t0) / 1e6, math = r.math ?: baseMath(s, stake))
+    }
+
+    /** Pot / stack / rake terms common to every node. */
+    private fun baseMath(s: FlowState, stake: Stake): NodeMath {
+        val rake = stake.defaultRake
+        val postflop = s.street != TableStreet.PREFLOP
+        return NodeMath(
+            street = s.street, potBb = s.potBb, effectiveStackBb = s.effectiveStackBb, spr = s.spr,
+            rakeBb = if (postflop) RakeModel.rakeModel(rake, s.potBb, s.effectiveStackBb) else 0.0,
+            rakeRate = rake.rate, rakeCapBb = rake.capBb,
+        )
     }
 
     /** Last-resort node: call / check when the preflop class equity vs a strong range beats the pot odds. */
-    private fun potOddsFallback(s: FlowState, label: String): OracleResult {
+    private fun potOddsFallback(s: FlowState, label: String, stake: Stake): OracleResult {
         val hero = s.heroPosition!!
         val hc = HandClass.fromCards(s.heroCards[0], s.heroCards[1])
         val eq = rangeEquity.vs(hc, strongRange).toDouble()
         val toCall = s.toCall(hero)
         val callEv = eq * (s.potBb + toCall) - toCall
         val good = callEv > 0
-        return OracleResult(label, passiveOptions(s, hero, if (good) 1f else 0f, callEv, if (good) 0f else 1f), true, 0.0)
+        val toPot = if (toCall > 1e-9) toCall / (s.potBb + toCall) else null
+        return OracleResult(label, passiveOptions(s, hero, if (good) 1f else 0f, callEv, if (good) 0f else 1f), true, 0.0,
+            baseMath(s, stake).copy(equity = eq, potOdds = toPot))
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------
@@ -124,7 +184,16 @@ class HeroOracle(
                 if (!d.evCall.isNaN()) out += OracleOption("CALL", "Call ${StreetFlowStateMachine.fmt(s.maxBet)}", d.mix.call, d.evCall, ActKind.CALL, s.maxBet)
                 out += OracleOption("FOLD", "Fold", d.mix.fold, 0.0, ActKind.FOLD, s.seat(hero).streetInvest)
             } else out += OracleOption("CHECK", "Check", d.mix.call + d.mix.fold, if (d.evCall.isNaN()) 0.0 else d.evCall, ActKind.CHECK, s.seat(hero).streetInvest)
-            return OracleResult(scenarioName, out, approx, 0.0)
+            val bestKey = out.filter { it.evBb.isFinite() }.maxByOrNull { it.evBb }?.key
+            val t = (if (bestKey == "RAISE") d.raise else d.call) ?: d.raise ?: d.call
+            val aggr = d.raise
+            val math = baseMath(s, stake).copy(
+                equity = t?.equity?.toDouble(), realization = t?.realization?.toDouble(),
+                mdf = aggr?.mdf, pFoldVillain = aggr?.mainFold, blockerFactor = aggr?.blockerFactor,
+                potOdds = if (toCall > 1e-9 && s.maxBet > StreetFlowStateMachine.BB_BLIND + 1e-9) toCall / (s.potBb + toCall) else null,
+                rakeBb = t?.rake ?: 0.0, coldCallVerdict = d.coldCall?.name,
+            )
+            return OracleResult(scenarioName, out, approx, 0.0, math)
         }
         fun analyze(k: SpotKey) = preflop.analyze(k, ctx).decision(hc)
 
@@ -146,10 +215,11 @@ class HeroOracle(
                             IsoDecision.FOLD -> OracleOption("FOLD", "Fold", f, v, ActKind.FOLD, s.seat(hero).streetInvest)
                         }
                     }
-                    return OracleResult("ISO vs ${isoLimpers.size} limper(s)", out, false, 0.0)
+                    return OracleResult("ISO vs ${isoLimpers.size} limper(s)", out, false, 0.0,
+                        baseMath(s, stake).copy(pFoldVillain = a.pFoldAll, equity = rangeEquity.vs(hc, a.callRange).toDouble()))
                 }
             }
-            if (hero == Position.BB) return OracleResult("BB option", passiveOptions(s, hero, 1f, 0.0, 0f), true, 0.0)
+            if (hero == Position.BB) return OracleResult("BB option", passiveOptions(s, hero, 1f, 0.0, 0f), true, 0.0, baseMath(s, stake))
             val k = SpotKey.of(Scenario.RFI, hero)
             return fromDecision("Open", "RFI ${hero.short}", analyze(k), sz.open(hero))
         }
@@ -187,7 +257,7 @@ class HeroOracle(
             if (valid(k)) return fromDecision(label, "${k.scenario.name.replace('_', ' ')} ${hero.short}", analyze(k), to, approx = i > 0 || raises.size > 3)
         }
         // Outside the solved tree: pot-odds call vs a strong range.
-        return potOddsFallback(s, "Pot odds vs ${raises.size}-raise pot")
+        return potOddsFallback(s, "Pot odds vs ${raises.size}-raise pot", stake)
     }
 
     private fun preflopEngine(k: SpotKey, ctx: PreflopContext): Boolean = runCatching { preflop.isValid(k, ctx) }.getOrDefault(false)
@@ -320,6 +390,58 @@ class HeroOracle(
             }
         }
         if (out.isEmpty()) out += passiveOptions(s, hero, 1f, 0.0, 0f)
-        return OracleResult("${s.street.name} · ${p.line.name.replace('_', ' ')}${if (multiway) " · 3-way" else ""}", out, approx, 0.0)
+        return OracleResult("${s.street.name} · ${p.line.name.replace('_', ' ')}${if (multiway) " · 3-way" else ""}", out, approx, 0.0,
+            postflopMath(s, stake, rep, out))
+    }
+
+    /** Terms of the solved postflop node for hero's combo: equity, realization, ΔRange / ΔNuts, MDF, P(fold), blockers, rake. */
+    private fun postflopMath(s: FlowState, stake: Stake, rep: StreetReport, out: List<OracleOption>): NodeMath {
+        val h = Combos.index(s.heroCards[0], s.heroCards[1])
+        val ranked = out.filter { it.evBb.isFinite() }.sortedByDescending { it.evBb }
+        val best = ranked.firstOrNull()
+        val subject = ranked.firstOrNull { it.kind != ActKind.FOLD }?.key
+        val aggr = ranked.firstOrNull { it.kind == ActKind.BET || it.kind == ActKind.RAISE || it.kind == ActKind.ALL_IN }
+        val passiveEv = ranked.filter { it.kind == ActKind.CHECK || it.kind == ActKind.CALL }.maxOfOrNull { it.evBb } ?: 0.0
+        val base = baseMath(s, stake)
+        val gap = if (best != null && aggr != null && best.key == aggr.key) aggr.evBb - maxOf(passiveEv, 0.0) else null
+        rep.flop?.let { a ->
+            val t = subject?.let { k -> runCatching { a.terms(FlopAction.valueOf(k), h) }.getOrNull() }
+            val ta = aggr?.let { k -> runCatching { a.terms(FlopAction.valueOf(k.key), h) }.getOrNull() }
+            val th = FlopPolicy().exploitOverrideBb
+            return base.copy(
+                equity = t?.equity?.toDouble(), realization = t?.realization?.toDouble(),
+                rangeAdvantage = a.rangeAdvantage, nutAdvantage = a.nutAdvantage, mdf = a.mdf, potOdds = a.potOdds,
+                pFoldVillain = ta?.pFold, rakeBb = t?.rake ?: base.rakeBb, aggressionCapped = a.capped(h),
+                overrideActive = gap != null && gap >= th && (ta?.equity ?: 1f) < 0.5f, overrideThresholdBb = th,
+                geometricSize = a.geometricSize.takeIf { it.isFinite() },
+            )
+        }
+        rep.turn?.let { a ->
+            val t = subject?.let { k -> runCatching { a.terms(TurnAction.valueOf(k), h) }.getOrNull() }
+            val ta = aggr?.let { k -> runCatching { a.terms(TurnAction.valueOf(k.key), h) }.getOrNull() }
+            val th = TurnPolicy().exploitOverrideBb
+            return base.copy(
+                equity = t?.equity?.toDouble(), realization = t?.realization?.toDouble(),
+                rangeAdvantage = a.rangeAdvantage, nutAdvantage = a.nutAdvantage, mdf = a.mdf, potOdds = a.potOdds,
+                pFoldVillain = ta?.pFold, rakeBb = t?.rake ?: base.rakeBb, aggressionCapped = a.capped(h),
+                overrideActive = gap != null && gap >= th && (ta?.equity ?: 1f) < 0.5f, overrideThresholdBb = th,
+                geometricSize = a.geometricSize.takeIf { it.isFinite() },
+            )
+        }
+        rep.river?.let { a ->
+            val t = subject?.let { k -> runCatching { a.terms(RiverAction.valueOf(k), h) }.getOrNull() }
+            val ta = aggr?.let { k -> runCatching { a.terms(RiverAction.valueOf(k.key), h) }.getOrNull() }
+            val pol = RiverPolicy()
+            val th = minOf(pol.exploitOverrideBb, pol.exploitPotShare * s.potBb)
+            return base.copy(
+                equity = t?.equity?.toDouble(), realization = 1.0,
+                rangeAdvantage = a.rangeAdvantage, nutAdvantage = a.nutAdvantage, mdf = a.mdf, potOdds = a.potOdds,
+                pFoldVillain = ta?.pFold, bNut = (ta ?: t)?.bNut, bFold = (ta ?: t)?.bFold, rakeBb = t?.rake ?: base.rakeBb,
+                aggressionCapped = a.capped(h), overrideThresholdBb = th,
+                overrideActive = gap != null && gap >= th && (ta?.bNut ?: 1.0) < pol.exploitBlocker && (ta?.equity ?: 1f) < 0.5f,
+                bluffShare = a.bluffShare.takeIf { it.isFinite() }, alpha = a.alpha.takeIf { it.isFinite() },
+            )
+        }
+        return base.copy(mdf = rep.mdf)
     }
 }

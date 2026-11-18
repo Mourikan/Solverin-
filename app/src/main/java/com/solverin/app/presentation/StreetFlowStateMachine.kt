@@ -55,11 +55,21 @@ data class FlowState(
     /** Pot at the start of each postflop street (bet fractions for the engine). */
     val streetPotStart: Map<TableStreet, Double> = emptyMap(),
     val history: List<ActionRecord> = emptyList(),
-    val stackBb: Double = 100.0,
+    /** Starting stack of every seat (bb), indexed by [Position.ordinal]. */
+    val stacks: List<Double> = List(6) { 100.0 },
 ) {
     fun seat(p: Position): SeatState = seats[p.ordinal]
+    fun startStack(p: Position): Double = stacks[p.ordinal]
     val potBb: Double get() = potStart + seats.sumOf { it.streetInvest }
-    fun stackLeft(p: Position): Double = (stackBb - seat(p).totalInvest).coerceAtLeast(0.0)
+    fun stackLeft(p: Position): Double = (startStack(p) - seat(p).totalInvest).coerceAtLeast(0.0)
+    /** Hero's effective starting stack: min(hero, deepest opponent still in the hand). */
+    val stackBb: Double get() {
+        val h = heroPosition ?: return stacks.max()
+        val deepest = Position.entries.filter { it != h && seat(it).inHand }.maxOfOrNull { startStack(it) } ?: startStack(h)
+        return minOf(startStack(h), deepest)
+    }
+    /** Stack-to-pot ratio of the current street (effective stack behind / pot). */
+    val spr: Double get() = if (potBb <= 0.0) Double.POSITIVE_INFINITY else effectiveStackBb / potBb
     fun toCall(p: Position): Double = (maxBet - seat(p).streetInvest).coerceAtLeast(0.0)
     val inHand: List<Position> get() = seats.filter { it.inHand }.map { it.position }
     val heroFolded: Boolean get() = heroPosition != null && !seat(heroPosition).inHand
@@ -90,7 +100,16 @@ object StreetFlowStateMachine {
     private val PREFLOP_ORDER = listOf(Position.UTG, Position.HJ, Position.CO, Position.BTN, Position.SB, Position.BB)
     private val POSTFLOP_ORDER = listOf(Position.SB, Position.BB, Position.UTG, Position.HJ, Position.CO, Position.BTN)
 
-    fun newHand(stackBb: Double): FlowState = FlowState(stackBb = stackBb)
+    fun newHand(stackBb: Double): FlowState = FlowState(stacks = List(6) { stackBb })
+
+    /** Replaces starting stacks (never below what a seat already invested); street flags are recomputed. */
+    fun withStacks(s: FlowState, stacks: List<Double>): FlowState {
+        require(stacks.size == 6 && stacks.all { it.isFinite() && it >= 1.0 }) { "Stacks must be >= 1bb" }
+        val fixed = stacks.mapIndexed { i, v -> maxOf(v, s.seats[i].totalInvest) }
+        val seats = s.seats.mapIndexed { i, seat -> seat.copy(allIn = seat.inHand && s.phase != StreetFlowPhase.PICK_HERO_CARDS &&
+            s.phase != StreetFlowPhase.PICK_HERO_POSITION && fixed[i] - seat.totalInvest <= 1e-9) }
+        return s.copy(stacks = fixed, seats = seats)
+    }
 
     fun pickHeroCard(s: FlowState, card: Int): FlowState {
         require(s.phase == StreetFlowPhase.PICK_HERO_CARDS) { "Hole cards are already set" }
@@ -213,9 +232,9 @@ object StreetFlowStateMachine {
 
     fun raiseName(street: TableStreet, level: Int, openingBet: Boolean): String = when {
         street == TableStreet.PREFLOP -> when (level) { 1 -> "Open"; 2 -> "3-Bet"; 3 -> "4-Bet"; else -> "${level + 1}-Bet" }
-        openingBet -> "Bet"
+        openingBet || level <= 1 -> "Bet"
         level == 2 -> "Raise"
-        else -> "Reraise"
+        else -> "$level-Bet"
     }
 
     /** One-tap legal options of the player to act (presets in bb); custom sizes go through [act] directly. */
@@ -253,10 +272,11 @@ object StreetFlowStateMachine {
                     s.history.none { it.street == s.street && it.aggressive } && POSTFLOP_ORDER.indexOf(p) < POSTFLOP_ORDER.indexOf(ini)
                 val name = if (donk) "Donk" else "Bet"
                 raise("Min", BB_BLIND)
-                for ((f, n) in listOf(0.25 to "25%", 0.33 to "33%", 0.5 to "50%", 0.75 to "75%", 1.25 to "125%", 1.5 to "150%")) raise("$name $n", round1(pot * f))
+                for ((f, n) in listOf(0.25 to "25% Block", 0.33 to "33%", 0.5 to "50%", 0.66 to "66%", 0.75 to "75%", 1.25 to "125% Overbet", 1.5 to "150%"))
+                    raise("$name $n", maxOf(BB_BLIND, round1(pot * f)))
             } else {
                 out += VillainOption("Call ${fmt(minOf(s.maxBet, cap))}", ActKind.CALL, minOf(s.maxBet, cap))
-                val label = if (s.raiseLevel >= 2) "Reraise" else "Raise"
+                val label = if (s.raiseLevel >= 2) "${s.raiseLevel + 1}-Bet" else "Raise"
                 raise("$label 2.5x", round1(s.maxBet * 2.5)); raise("$label 3x", round1(s.maxBet * 3)); raise("$label pot", round1(pot + 2 * toCall + seat.streetInvest))
             }
         }

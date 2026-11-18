@@ -41,6 +41,7 @@ object CakeColors {
     val Card = Color(0xFF27262C)
     val CardBorder = Color(0xFF383241)
     val Cyan = Color(0xFF1FC7D4)
+    val CyanLip = Color(0xFF0098A1)
     val Purple = Color(0xFF7645D9)
     val Gold = Color(0xFFFFB237)
     val Mint = Color(0xFF31D0AA)
@@ -55,9 +56,10 @@ object CakeColors {
     fun action(kind: ActKind): Color = when (kind) {
         ActKind.FOLD -> Pink
         ActKind.CHECK, ActKind.CALL, ActKind.LIMP -> Cyan
-        ActKind.BET -> Mint
-        ActKind.RAISE, ActKind.ALL_IN -> Purple
+        ActKind.BET, ActKind.RAISE, ActKind.ALL_IN -> Mint
     }
+
+    fun lip(c: Color): Color = if (c == Cyan) CyanLip else lerp(c, Color.Black, 0.35f)
 
     /** Four-colour deck: clubs, diamonds, hearts, spades (engine suit order "cdhs"). */
     val suitColors = listOf(Mint, Cyan, Pink, TextPrimary)
@@ -108,11 +110,12 @@ fun CakeButton(
     fontSize: TextUnit = 14.sp,
     fontFamily: FontFamily? = null,
     lip: Dp = 3.dp,
+    maxLines: Int = 2,
     onClick: () -> Unit,
 ) {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val lipColor = lerp(color, Color.Black, 0.35f)
+    val lipColor = CakeColors.lip(color)
     Box(
         modifier
             .alpha(if (enabled) 1f else 0.35f)
@@ -130,7 +133,7 @@ fun CakeButton(
         ) {
             Text(
                 text, color = textColor, fontWeight = FontWeight.ExtraBold, fontSize = fontSize, fontFamily = fontFamily,
-                textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = fontSize * 1.05f,
+                textAlign = TextAlign.Center, maxLines = maxLines, overflow = TextOverflow.Ellipsis, lineHeight = fontSize * 1.05f,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
         }

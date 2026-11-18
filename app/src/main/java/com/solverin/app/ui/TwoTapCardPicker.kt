@@ -32,17 +32,17 @@ fun TwoTapCardPicker(
     CakePanel(modifier) {
         Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val title = when (state.phase) {
-                StreetFlowPhase.PICK_HERO_CARDS -> "HOLE CARD ${state.heroCardIds.size + 1}/2"
+                StreetFlowPhase.PICK_HERO_CARDS -> "CARTA DEL HÉROE ${state.heroCardIds.size + 1}/2"
                 else -> when (state.boardIds.size) {
-                    0, 1, 2 -> "FLOP CARD ${state.boardIds.size + 1}/3"
-                    3 -> "TURN CARD"
-                    else -> "RIVER CARD"
+                    0, 1, 2 -> "FLOP · CARTA ${state.boardIds.size + 1}/3"
+                    3 -> "TURN · 4ª CARTA"
+                    else -> "RIVER · 5ª CARTA"
                 }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, color = CakeColors.Cyan, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                Text(state.pickerRank?.let { "Rank ${Card.RANK_CHARS[it]} → suit" } ?: "Tap rank", color = CakeColors.TextSecondary, fontSize = 12.sp)
-                CakeButton("↶ Undo", CakeColors.Purple, Modifier.padding(start = 8.dp).width(84.dp).height(32.dp),
+                Text(state.pickerRank?.let { "Rango ${Card.RANK_CHARS[it]} → palo" } ?: "Toca un rango", color = CakeColors.TextSecondary, fontSize = 12.sp)
+                CakeButton("↩ Undo", CakeColors.Purple, Modifier.padding(start = 8.dp).width(84.dp).height(32.dp),
                     enabled = state.canUndo, textColor = CakeColors.TextPrimary, fontSize = 12.sp, onClick = onUndo)
             }
             val ranks = (12 downTo 0).toList()

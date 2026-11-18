@@ -32,6 +32,7 @@ fun VillainActionStepper(
     onCustomStep: (Int) -> Unit,
     onCustomExecute: () -> Unit,
     onUndo: () -> Unit,
+    onContinue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     CakePanel(modifier) {
@@ -39,20 +40,26 @@ fun VillainActionStepper(
             Row(Modifier.fillMaxWidth().height(34.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (state.heroToAct) "HERO (${state.toAct}) · SOLVING…" else "${state.toAct ?: "—"} TO ACT",
-                        color = CakeColors.Cyan, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
+                        when {
+                            state.heroFoldPending -> "HÉROE: FOLD (MAX EV)"
+                            state.heroToAct -> "HÉROE (${state.toAct}) · RESOLVIENDO…"
+                            else -> "HABLA ${state.toAct ?: "—"} · ${state.street.name}"
+                        },
+                        color = if (state.heroFoldPending) CakeColors.Pink else CakeColors.Cyan, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp,
                     )
                     Text(
                         state.history.takeLast(3).joinToString("  ·  ").ifEmpty { "${state.street.name} · blinds posted" },
                         color = CakeColors.TextSecondary, fontSize = 10.sp, fontFamily = Mono, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                CakeButton("↶ Undo", CakeColors.Purple, Modifier.width(84.dp).fillMaxHeight(), enabled = state.canUndo,
+                if (state.heroFoldPending) CakeButton("Continuar en la mano", CakeColors.Cyan, Modifier.width(150.dp).fillMaxHeight(),
+                    fontSize = 12.sp, onClick = onContinue)
+                else CakeButton("↩ Undo", CakeColors.Purple, Modifier.width(84.dp).fillMaxHeight(), enabled = state.canUndo,
                     textColor = CakeColors.TextPrimary, fontSize = 12.sp, onClick = onUndo)
             }
             if (state.heroToAct || state.villainOptions.isEmpty()) {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("Solving hero's Max-EV action…", color = CakeColors.TextSecondary, fontWeight = FontWeight.Bold)
+                    Text("Resolviendo la acción Max EV del héroe…", color = CakeColors.TextSecondary, fontWeight = FontWeight.Bold)
                 }
                 return@Column
             }
@@ -70,14 +77,13 @@ fun VillainActionStepper(
                 val row = rows.getOrNull(i).orEmpty()
                 Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     row.forEach { o ->
-                        CakeButton(o.label, if (o.kind == ActKind.BET) CakeColors.Mint else CakeColors.Purple, Modifier.weight(1f).fillMaxHeight(),
-                            textColor = if (o.kind == ActKind.BET) CakeColors.Ink else CakeColors.TextPrimary, fontSize = 12.sp, fontFamily = Mono) { onAction(o) }
+                        CakeButton(o.label, CakeColors.Mint, Modifier.weight(1f).fillMaxHeight(), fontSize = 11.sp, fontFamily = Mono) { onAction(o) }
                     }
                     if (row.size < 4) Spacer(Modifier.weight((4 - row.size).toFloat()))
                 }
             }
             if (rows.size > rowSlots) {
-                Text("+${rows.drop(rowSlots).sumOf { it.size }} sizes via custom", color = CakeColors.TextSecondary, fontSize = 10.sp)
+                Text("+${rows.drop(rowSlots).sumOf { it.size }} tamaños: usa el ajuste fino", color = CakeColors.TextSecondary, fontSize = 10.sp)
             }
             Row(Modifier.fillMaxWidth().weight(1.1f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 CakeButton("−", CakeColors.BackgroundAlt, Modifier.weight(0.7f).fillMaxHeight(), enabled = state.customAmountBb > state.minCustomBb + 1e-9,
@@ -90,8 +96,7 @@ fun VillainActionStepper(
                 val betWord = if (state.street == TableStreet.PREFLOP || state.villainOptions.any { it.kind == ActKind.CALL || it.kind == ActKind.LIMP }) "RAISE" else "BET"
                 CakeButton("$betWord ${bb(state.customAmountBb)}", CakeColors.Mint, Modifier.weight(1.6f).fillMaxHeight(), fontSize = 13.sp,
                     fontFamily = Mono, onClick = onCustomExecute)
-                if (allIn != null) CakeButton(allIn.label.uppercase(), CakeColors.Pink, Modifier.weight(1.6f).fillMaxHeight(),
-                    textColor = CakeColors.TextPrimary, fontSize = 12.sp) { onAction(allIn) }
+                if (allIn != null) CakeButton(allIn.label.uppercase(), CakeColors.Mint, Modifier.weight(1.6f).fillMaxHeight(), fontSize = 12.sp) { onAction(allIn) }
             }
         }
     }

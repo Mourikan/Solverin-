@@ -98,7 +98,7 @@ class SolverViewModelTest {
         assertOracle(s)
         assertTrue(s.nodeLabel, s.nodeLabel.contains("VS 3BET"))
         // Override: hero calls the 3-bet instead of the auto action.
-        vm.selectHeroAction("CALL"); advanceUntilIdle()
+        vm.overrideHeroAction("CALL"); advanceUntilIdle()
         s = vm.state.value
         assertEquals("CALL", s.heroCommittedKey)
         assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
@@ -121,19 +121,19 @@ class SolverViewModelTest {
         assertNotNull(vm.state.value.error)
 
         // Force a check from hero, BTN bets 50%, hero's response node is solved and auto-committed.
-        vm.selectHeroAction("CHECK"); advanceUntilIdle()
+        vm.overrideHeroAction("CHECK"); advanceUntilIdle()
         vm.villain("Bet 50%"); advanceUntilIdle()
         s = vm.state.value
         assertOracle(s)
         assertTrue(s.options.any { it.key == "FOLD" } && s.options.any { it.key == "CALL" })
-        vm.selectHeroAction("CALL"); advanceUntilIdle()
+        vm.overrideHeroAction("CALL"); advanceUntilIdle()
         assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, vm.state.value.phase)
 
         pickCards(vm, "7h")
         s = vm.state.value
         assertEquals(TableStreet.TURN, s.street)
         assertOracle(s)
-        vm.selectHeroAction("CHECK"); advanceUntilIdle()
+        vm.overrideHeroAction("CHECK"); advanceUntilIdle()
         vm.villain("Check"); advanceUntilIdle()
         assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, vm.state.value.phase)
 
@@ -142,7 +142,7 @@ class SolverViewModelTest {
         assertEquals(TableStreet.RIVER, s.street)
         assertOracle(s)
         assertEquals(5, s.boardIds.size)
-        vm.selectHeroAction("CHECK"); advanceUntilIdle()
+        vm.overrideHeroAction("CHECK"); advanceUntilIdle()
         vm.villain("Check"); advanceUntilIdle()
         s = vm.state.value
         assertEquals(StreetFlowPhase.HAND_COMPLETE, s.phase)
@@ -188,7 +188,7 @@ class SolverViewModelTest {
         assertOracle(s)
         vm.villain("Fold"); advanceUntilIdle()
         assertEquals("CO", vm.state.value.toAct)
-        vm.selectHeroAction("FOLD"); advanceUntilIdle()
+        vm.overrideHeroAction("FOLD"); advanceUntilIdle()
         assertNotNull(vm.state.value.error) // no longer overridable
         vm.undo(); advanceUntilIdle()
         s = vm.state.value
@@ -230,7 +230,7 @@ class SolverViewModelTest {
         repeat(3) { vm.villain("Fold"); advanceUntilIdle() } // UTG, MP, CO
         val heroKey = vm.state.value.heroCommittedKey
         assertNotNull(heroKey)
-        if (heroKey != "RAISE") vm.selectHeroAction("RAISE")
+        if (heroKey != "RAISE") vm.overrideHeroAction("RAISE")
         advanceUntilIdle()
         vm.villain("Fold"); advanceUntilIdle()   // SB
         vm.villain("Call"); advanceUntilIdle()   // BB
@@ -245,12 +245,12 @@ class SolverViewModelTest {
         s = vm.state.value
         assertOracle(s)
         assertTrue(s.options.any { it.key == "FOLD" })
-        vm.selectHeroAction("RAISE"); advanceUntilIdle()
+        vm.overrideHeroAction("RAISE"); advanceUntilIdle()
         s = vm.state.value
         assertEquals("BB", s.toAct)
         // Reraise level offered to BB; reraise → hero faces level 3 and is solved again.
-        assertTrue(s.villainOptions.any { it.label.startsWith("Reraise") })
-        vm.villain("Reraise 3x"); advanceUntilIdle()
+        assertTrue(s.villainOptions.any { it.label.startsWith("3-Bet") })
+        vm.villain("3-Bet 3x"); advanceUntilIdle()
         s = vm.state.value
         // Hero faces the 3rd raise level: solved and auto-committed (call closes the flop, fold ends the hand).
         assertOracle(s)
@@ -267,12 +267,141 @@ class SolverViewModelTest {
         vm.setHeroPosition(Position.BTN); advanceUntilIdle()
         val before = vm.state.value.options.map { it.evBb }
         vm.setStake(Stake.NL2); advanceUntilIdle()
-        vm.setProfile(VillainProfilePreset.OVERFOLDER); advanceUntilIdle()
+        vm.setProfile(VillainProfilePreset.NIT); advanceUntilIdle()
         val s = vm.state.value
         assertEquals(Stake.NL2, s.stake)
-        assertEquals(VillainProfilePreset.OVERFOLDER, s.profile)
+        assertEquals(VillainProfilePreset.NIT, s.profile)
         assertOracle(s)
         assertTrue(before.isNotEmpty())
         assertNull(s.error)
+    }
+
+    @Test
+    fun heroMaxEvIsAssumedAndManualDeviationRecomputesState() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ks", "Qs")
+        vm.setHeroPosition(Position.CO); advanceUntilIdle()
+        vm.villain("Fold"); advanceUntilIdle()
+        vm.villain("Fold"); advanceUntilIdle()
+        var s = vm.state.value
+        val best = s.maxEvAction!!
+        assertEquals(best.key, s.heroCommittedKey)
+        assertFalse(s.manualDeviation)
+        assertTrue(s.heroOverridable)
+        val potAuto = s.potBb
+        // Deviation: hero actually folded.
+        vm.overrideHeroAction("FOLD"); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals("FOLD", s.heroCommittedKey)
+        assertTrue(s.manualDeviation)
+        assertTrue(s.heroFoldPending)
+        assertTrue(s.committedAction!!.deltaEvBb <= 0.0)
+        assertTrue(s.potBb < potAuto)
+        // Anti-lock: a further villain input switches hero back to the best non-fold action.
+        assertTrue(s.villainOptions.isNotEmpty())
+        vm.villain("Fold"); advanceUntilIdle()   // BTN
+        s = vm.state.value
+        assertEquals("SB", s.toAct)
+        assertTrue(s.seats.first { it.isHero }.inHand)
+        assertFalse(s.heroOverridable)
+        // Explicit continue path.
+        vm.undo(); advanceUntilIdle()
+        assertEquals("BTN", vm.state.value.toAct)
+    }
+
+    @Test
+    fun maxEvFoldStaysRecoverableWithContinueInHand() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "7d", "2c")
+        vm.setHeroPosition(Position.UTG); advanceUntilIdle()
+        var s = vm.state.value
+        assertEquals("FOLD", s.heroCommittedKey)
+        assertTrue(s.heroFoldPending)
+        assertEquals(StreetFlowPhase.HAND_COMPLETE, s.phase)
+        assertTrue(vm.continueInHand())
+        advanceUntilIdle()
+        s = vm.state.value
+        assertFalse(s.heroFoldPending)
+        assertEquals(StreetFlowPhase.VILLAIN_ACTION_STEPPER, s.phase)
+        assertEquals("MP", s.toAct)
+        assertTrue(s.manualDeviation)
+    }
+
+    @Test
+    fun stakeAndStackChangesUpdateEvSprAndSpanishExplanation() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ad", "Qd")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        repeat(3) { vm.villain("Fold"); advanceUntilIdle() }
+        vm.overrideHeroAction("RAISE"); advanceUntilIdle()
+        vm.villain("Fold"); advanceUntilIdle()
+        vm.villain("Call"); advanceUntilIdle()
+        pickCards(vm, "Qh", "7c", "3s")
+        var s = vm.state.value
+        assertEquals(TableStreet.FLOP, s.street)
+        assertOracle(s)
+        val e0 = s.explanation!!
+        assertEquals(4, e0.points.size)
+        assertTrue(e0.points[0].startsWith("1. Veredicto EV"))
+        assertTrue(e0.points.any { it.contains("SPR") })
+        assertTrue(e0.points.last().contains("Rake NL50"))
+        val spr100 = s.spr
+        val ev100 = s.options.associate { it.key to it.evBb }
+
+        vm.setStake(Stake.NL2); advanceUntilIdle()
+        s = vm.state.value
+        assertOracle(s)
+        assertEquals(Stake.NL2, s.stake)
+        assertTrue(s.explanation!!.points.last().contains("Rake NL2"))
+        assertTrue(s.options.any { o -> ev100[o.key]?.let { kotlin.math.abs(it - o.evBb) > 1e-6 } ?: true })
+
+        vm.setEffectiveStack(20.0); advanceUntilIdle()
+        s = vm.state.value
+        assertOracle(s)
+        assertEquals(20.0, s.tableStackBb, 1e-9)
+        assertTrue(s.spr < spr100)
+        assertTrue(s.effectiveStackBb < 20.0)
+        assertTrue(s.explanation!!.points.any { it.contains("SPR ${String.format(java.util.Locale.US, "%.1f", s.spr)}") })
+
+        // Single-seat stack: only the selected seat changes.
+        vm.selectSeat(Position.UTG); vm.adjustStack(5.0); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals("UTG", s.selectedSeat)
+        assertEquals(25.0, s.seats.first { it.label == "UTG" }.stackBb, 1e-9)
+        assertEquals(20.0, s.tableStackBb, 1e-9)
+    }
+
+    @Test
+    fun multiRaisesKeepTheStreetOpenUntilEveryoneMatches() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "2s", "3d")
+        vm.setHeroPosition(Position.BB); advanceUntilIdle()
+        vm.villain("Open 2.5"); advanceUntilIdle()      // UTG
+        vm.villain("Call"); advanceUntilIdle()          // MP
+        vm.villain("3-Bet IP"); advanceUntilIdle()      // CO 3-bet
+        vm.villain("4-Bet"); advanceUntilIdle()         // BTN 4-bet
+        vm.villain("Fold"); advanceUntilIdle()          // SB
+        var s = vm.state.value
+        // Hero BB auto-folds 32o; the street is still open for UTG / MP / CO.
+        assertEquals(StreetFlowPhase.HAND_COMPLETE, s.phase)
+        assertTrue(s.heroFoldPending)
+        vm.continueInHand(); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.VILLAIN_ACTION_STEPPER, s.phase)
+        assertEquals("UTG", s.toAct)
+        vm.villain("Fold"); advanceUntilIdle()          // UTG
+        vm.villain("Fold"); advanceUntilIdle()          // MP
+        s = vm.state.value
+        assertEquals("CO", s.toAct)
+        assertEquals(StreetFlowPhase.VILLAIN_ACTION_STEPPER, s.phase)
+        vm.villain("5-Bet"); advanceUntilIdle()         // CO 5-bet re-opens the action
+        s = vm.state.value
+        assertEquals("BTN", s.toAct)
+        vm.villain("Call"); advanceUntilIdle()          // BTN calls
+        s = vm.state.value
+        // Hero (BB) must respond to the 5-bet before the street can close.
+        assertTrue(s.heroCommittedKey != null || s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER)
+        val heroIn = s.seats.first { it.isHero }
+        if (heroIn.inHand && !s.heroFoldPending) assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
     }
 }

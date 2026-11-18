@@ -43,13 +43,14 @@ fun CompactTable6Max(
     state: HandViewState,
     onHeroCardTap: (Int) -> Unit,
     onBoardCardTap: (Int) -> Unit,
+    onSeatTap: (com.solverin.engine.core.Position) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         StreetProgress(state.street, Modifier.fillMaxWidth().height(18.dp))
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             val w = maxWidth; val h = maxHeight
-            val seatW = (w / 6.2f).coerceAtMost(72.dp); val seatH = (h / 3.2f).coerceAtMost(40.dp)
+            val seatW = (w / 5.6f).coerceAtMost(80.dp); val seatH = (h / 2.9f).coerceAtMost(48.dp)
             Box(
                 Modifier
                     .align(Alignment.Center)
@@ -60,18 +61,15 @@ fun CompactTable6Max(
                     .border(2.dp, CakeColors.Purple.copy(alpha = 0.6f), RoundedCornerShape(50)),
             )
             CenterCards(state, onHeroCardTap, onBoardCardTap, Modifier.align(Alignment.Center))
-            if (state.seats.isNotEmpty()) {
+            run {
                 val heroIdx = state.seats.indexOfFirst { it.isHero }.coerceAtLeast(0)
                 state.seats.forEachIndexed { i, seat ->
                     // Clockwise ring with hero at the bottom centre.
                     val angle = Math.PI / 2 + 2 * Math.PI * ((i - heroIdx + 6) % 6) / 6.0
                     val cx = w / 2 + (w / 2 - seatW / 2) * cos(angle).toFloat()
                     val cy = h / 2 + (h / 2 - seatH / 2) * sin(angle).toFloat()
-                    SeatBadge(seat, Modifier.offset(cx - seatW / 2, cy - seatH / 2).size(seatW, seatH))
+                    SeatBadge(seat, Modifier.offset(cx - seatW / 2, cy - seatH / 2).size(seatW, seatH).clickable { onSeatTap(seat.position) })
                 }
-            } else {
-                Text("6-MAX", color = CakeColors.TextSecondary, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
             }
         }
     }
@@ -80,7 +78,7 @@ fun CompactTable6Max(
 @Composable
 private fun StreetProgress(street: TableStreet, modifier: Modifier) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        TableStreet.entries.forEach { s ->
+        TableStreet.entries.filter { it != TableStreet.SHOWDOWN || street == TableStreet.SHOWDOWN }.forEach { s ->
             val done = s.ordinal < street.ordinal
             val now = s == street
             Box(
@@ -100,6 +98,7 @@ private fun StreetProgress(street: TableStreet, modifier: Modifier) {
 private fun SeatBadge(seat: SeatView, modifier: Modifier) {
     val border = when {
         seat.isToAct -> CakeColors.Cyan
+        seat.isSelected -> CakeColors.Gold
         seat.isHero -> CakeColors.Purple
         else -> CakeColors.CardBorder
     }
@@ -117,13 +116,15 @@ private fun SeatBadge(seat: SeatView, modifier: Modifier) {
         Text(seat.label + if (seat.isHero) "★" else "", color = if (seat.isToAct) CakeColors.Cyan else CakeColors.TextPrimary,
             fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, maxLines = 1)
         val status = when {
+            !seat.inHand -> "FOLD"
             seat.allIn -> "ALL-IN"
             seat.status.isNotEmpty() -> seat.status
-            seat.investBb > 0 -> "${bb(seat.investBb)}bb"
             else -> "—"
         }
         Text(status, color = if (seat.inHand) CakeColors.TextSecondary else CakeColors.Pink, fontSize = 8.sp, fontFamily = Mono,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("${bb(seat.stackBb)}" + if (seat.investBb > 0) " ·${bb(seat.investBb)}" else "", color = CakeColors.Gold, fontSize = 8.sp,
+            fontFamily = Mono, maxLines = 1)
     }
 }
 
@@ -134,7 +135,10 @@ private fun CenterCards(state: HandViewState, onHeroCardTap: (Int) -> Unit, onBo
             for (i in 0 until 5) CardSlot(state.boardIds.getOrNull(i), 22.dp, enabled = i < state.boardIds.size) { onBoardCardTap(i) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Pot ${bb(state.potBb)}", color = CakeColors.Gold, fontSize = 9.sp, fontFamily = Mono, fontWeight = FontWeight.Bold)
+            Column(horizontalAlignment = Alignment.End) {
+                Text("Pot ${bb(state.potBb)}", color = CakeColors.Gold, fontSize = 9.sp, fontFamily = Mono, fontWeight = FontWeight.Bold)
+                Text("SPR ${spr(state.spr)}", color = CakeColors.TextSecondary, fontSize = 8.sp, fontFamily = Mono)
+            }
             Spacer(Modifier.width(4.dp))
             for (i in 0 until 2) CardSlot(state.heroCardIds.getOrNull(i), 22.dp, enabled = i < state.heroCardIds.size, hero = true) { onHeroCardTap(i) }
         }
