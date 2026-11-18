@@ -77,13 +77,14 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             for (h in heroIdx) {
                 val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                 bets[h] = t
-                // ThreeFlushTurnBrake: braked hands never overbet.
-                val betEv = if (size > p.standardBet && m.braked(h, facingRange)) Double.NEGATIVE_INFINITY else t.ev
+                // ThreeFlushTurnBrake: braked hands never overbet. Condensed villain: no stack-off without equity / nuts.
+                val betEv = if ((size > p.standardBet && m.braked(h, facingRange)) || stackOffBlocked(m, p, h, t)) Double.NEGATIVE_INFINITY else t.ev
                 val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, betEv, p.mixBandBb)
                 fc[h] = mix[1]; fb[h] = mix[2]
             }
             val foldAll = resp.foldTotal / resp.priorTotal * (xResp?.let { it.foldTotal / it.priorTotal } ?: 1.0)
-            val ratio = TurnBluffCap.ratio(false, b / pot, foldAll, m.villainModel.mdf(pot, b), m.responseFoldLocked, p)
+            val ratio = TurnBluffCap.ratio(false, b / pot, foldAll, m.villainModel.mdf(pot, b), m.responseFoldLocked, p) * condensedScale(p, m)
+            val overfolds = foldAll > 1 - m.villainModel.mdf(pot, b)
             // A locked fold is a read: value is measured vs his whole range so an over-folder does not shrink it.
             val cont = if (m.responseFoldLocked) resp.prior else resp.continueRange
             val valueEq = if (m.station) p.thinValueEquity else 0.5f
@@ -92,7 +93,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
                 isValue = { m.eqVs(cont).equity(it) >= valueEq || m.isNut(it) },
                 priority = { m.semiBluffPriority(it, cont) }, foldAllowed = { false },
-                exempt = { m.exploitEligible(it, cont) && bets[it]!!.ev - check[it]!!.ev >= p.exploitOverrideBb },
+                exempt = { overrideOpen(overfolds) && m.exploitEligible(it, cont) && bets[it]!!.ev - check[it]!!.ev >= overrideThreshold(p, pot) },
             )
             fourFlushShield(m, heroIdx, fb, fc, null, capped, { check[it]!!.ev }, { false })
             var total = 0.0
@@ -102,6 +103,18 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
         val c = best!!
         return base(mapOf(TurnAction.CHECK to c.fc, betAction to c.fb), mapOf(TurnAction.CHECK to check, betAction to c.bets), c.size, c.bet, c.capped)
     }
+
+    /** Override threshold: max(exploitOverrideBb, exploitOverridePotShare × pot). */
+    private fun overrideThreshold(p: TurnPolicy, pot: Double) = maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot)
+
+    /** No override in RAISE_CALL / 3-bet pots, and only vs a villain over-folding vs MDF. */
+    private fun overrideOpen(overfolds: Boolean) = overfolds && !spot.threeBetPot && spot.line != FlopLine.RAISE_CALL
+
+    private fun condensedScale(p: TurnPolicy, m: TurnMathEngine) = if (m.tightened) p.condensedBluffScale else 1.0
+
+    /** Stack-off guard vs a condensed range: an all-in needs stackOffEquity vs the calling range or a nut hand. */
+    private fun stackOffBlocked(m: TurnMathEngine, p: TurnPolicy, h: Int, t: TurnEvTerms) =
+        spot.condensedVillain && !m.station && t.allIn && t.equity < p.stackOffEquity && !m.isNut(h)
 
     private class SizeResult(
         val size: Double, val bet: Double, val total: Double, val bets: Array<TurnEvTerms?>,
@@ -144,14 +157,15 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
             // Four-flush shield: no all-in call without a flush card.
             val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h)))) Double.NEGATIVE_INFINITY else c.ev
-            val raiseEv = if (brakeRaise) Double.NEGATIVE_INFINITY else r?.ev ?: Double.NEGATIVE_INFINITY
+            val raiseEv = if (brakeRaise || (r != null && stackOffBlocked(m, p, h, r))) Double.NEGATIVE_INFINITY else r?.ev ?: Double.NEGATIVE_INFINITY
             val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, callEv, raiseEv, p.mixBandBb)
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)
         val raiseSize = m.raiseTo(bet, potBefore) - bet
         val ratio = TurnBluffCap.ratio(true, raiseSize / potBefore, raiseResp.foldTotal / raiseResp.priorTotal,
-            m.villainModel.mdf(potBefore, raiseSize), m.raiseFoldLocked, p)
+            m.villainModel.mdf(potBefore, raiseSize), m.raiseFoldLocked, p) * condensedScale(p, m)
+        val raiseOverfolds = raiseResp.foldTotal / raiseResp.priorTotal > 1 - m.villainModel.mdf(potBefore, raiseSize)
         val cont = if (m.raiseFoldLocked) raiseResp.prior else raiseResp.continueRange
         val capped = TurnBluffCap.apply(
             heroIdx, m.hero, ratio, false, fRaise, fCall, fFold,
@@ -159,8 +173,8 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             isValue = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             priority = { m.semiBluffPriority(it, cont) },
             foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
-            exempt = { h -> m.exploitEligible(h, cont) &&
-                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= p.exploitOverrideBb },
+            exempt = { h -> overrideOpen(raiseOverfolds) && m.exploitEligible(h, cont) &&
+                (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= overrideThreshold(p, potBefore) },
         )
         if (!spot.heroInPosition) {
             val connected = m.impact.has(TurnCardCategory.FLUSH_COMPLETING) || m.impact.has(TurnCardCategory.STRAIGHT_COMPLETING)

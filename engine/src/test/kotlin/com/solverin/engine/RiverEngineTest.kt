@@ -156,17 +156,24 @@ class RiverEngineTest {
         assertFailsWith<IllegalArgumentException> { RiverSpot(b, h, v, true, true, RiverLine.MULTIWAY_3WAY, 30.0, 80.0) }
         assertFailsWith<IllegalArgumentException> { RiverSession(RiverSpot(b, FloatArray(Combos.COUNT), v, true, true, RiverLine.BARREL_CALL, 30.0, 80.0)) }
         assertFailsWith<IllegalArgumentException> { RiverNodeLock(fold = 1.5) }
-        val s = direct("KsTs6h2d3s", FlopBoards.CO_OPEN, FlopBoards.BB_DEFEND, false, true, RiverLine.BARREL_CALL, 30.0, 80.0)
+        // Lock mechanism on an uncondensed line (turn checked through): the over-fold read adds bluffs.
+        val s = direct("KsTs6h2d3s", FlopBoards.CO_OPEN, FlopBoards.BB_DEFEND, false, true, RiverLine.CHECK_CHECK_TURN, 30.0, 80.0)
         val base = s.analyze(ctx); val over = s.analyze(ctx.copy(locks = RiverNodeLocks.foldToRiverBet(0.6)))
         RiverInvariants.all(base, "base"); RiverInvariants.all(over, "over")
         fun bluffs(a: RiverAnalysis): Double {
             var n = 0.0; var d = 0.0
             for (h in 0 until Combos.COUNT) { val w = a.heroRange[h]; if (w <= 0f) continue; d += w
-                if (a.terms(RiverAction.TRIPLE_BARREL, h)!!.equity < 0.5f) n += w * a.frequency(RiverAction.TRIPLE_BARREL, h) }
+                val act = a.betAction ?: continue
+                if (a.terms(act, h)!!.equity < 0.5f) n += w * a.frequency(act, h) }
             return n / d
         }
         println("river lock bluffs base=%.3f over=%.3f".format(bluffs(base), bluffs(over)))
         assertTrue(bluffs(over) > bluffs(base), "foldToRiverBet lock: more bluffs")
+        // After two streets of calls the locked read is unconditional while his range is not: bluffs contract.
+        val two = direct("KsTs6h2d3s", FlopBoards.CO_OPEN, FlopBoards.BB_DEFEND, false, true, RiverLine.BARREL_CALL, 30.0, 80.0)
+        val locked = ctx.copy(locks = RiverNodeLocks.foldToRiverBet(0.6))
+        val raw = locked.copy(policy = locked.policy.copy(condensedBluffScale = 1.0, condensedFoldScale = 1.0))
+        assertTrue(bluffs(two.analyze(locked)) < bluffs(two.analyze(raw)), "two-street caller: condensed range contracts locked bluffs")
         val m = s.math(ctx.copy(locks = RiverNodeLocks.foldToRiverOverbet(0.8) + RiverNodeLocks.riverCallElasticity(0.2)))
         assertEquals(0.8, m.villainFold(1.5), 1e-12)
         assertTrue(m.defenseShare(0.7) < s.math(ctx).defenseShare(0.7), "elasticity lock")

@@ -142,7 +142,10 @@ class StressTest {
         val k = SpotKey.of(Scenario.VS_RFI, CO, UTG)
         val locks = NodeLocks.NONE.with(VillainNode.OPEN, UTG, NodeLock(raise = 0.12))
             .with(VillainNode.VS_3BET, UTG, NodeLock(raise = 0.06, call = 0.24), versus = CO)
-        val ctx = PreflopContext(Stake.NL200, locks = locks)
+        // Mechanism test on the override itself: thresholds pinned (production: 1.60 bb / 8 pp over-fold).
+        val ctx = PreflopContext(Stake.NL200, locks = locks).let {
+            it.copy(policy = it.policy.copy(massiveExploitEvBb = 1.10, massiveOverfoldMargin = 0.03))
+        }
         val a = engine.analyze(k, ctx)
         val t = a.raiseTerms!![h("A5s")]
         assertTrue(t.blockerFactor >= 1.0, "A5s unblocks UTG's folds here (BF ${t.blockerFactor})")

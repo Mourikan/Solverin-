@@ -129,8 +129,20 @@ class FullGameExtremeAuditTest {
         val m = ra.riverSession!!.math(ra.riverContext!!)
         val tA = ra.river!!.terms(RiverAction.TRIPLE_BARREL, k("AsQd"))!!
         println("E AsQd bet=%.2f check=%.2f bNut=%.2f mix=%s | QhJh mix=%s ev=%s".format(tA.ev, ra.heroEv.getValue("CHECK"), tA.bNut, ra.heroMix, qj.report(Street.RIVER)!!.heroMix, qj.report(Street.RIVER)!!.heroEv))
-        assertTrue(tA.bNut < RiverPolicy().exploitBlocker && tA.ev - ra.heroEv.getValue("CHECK") >= RiverPolicy().exploitOverrideBb)
+        // Two streets of calls, but the population (no locked read) still over-folds this river vs MDF: the override opens
+        // only with a real nut blocker and EV − check ≥ max(4 bb, 25% pot).
+        assertTrue(ra.river!!.spot.villainCalledTwoStreets)
+        assertTrue(tA.bNut < RiverPolicy().exploitBlocker && tA.ev - ra.heroEv.getValue("CHECK") >=
+            maxOf(RiverPolicy().exploitOverrideBb, RiverPolicy().exploitPotShare * ra.potBb))
         assertTrue(ra.heroMix.getValue("TRIPLE_BARREL") > 0.99f, "PostflopMassiveExploitOverride: A♠Q♦ bluffs")
+        // A locked Nit / over-fold read after two calls keeps it shut (the read is unconditional, his range is not).
+        val nit = play(base.copy(locks = com.solverin.engine.pipeline.HandLocks(river = RiverNodeLocks.foldToRiverBet(0.72))), "E nit")
+        val rn = nit.report(Street.RIVER)!!
+        val mn = rn.riverSession!!.math(rn.riverContext!!)
+        val rawCtx = rn.riverContext!!.copy(policy = rn.riverContext!!.policy.copy(condensedBluffScale = 1.0, condensedFoldScale = 1.0))
+        val mr = rn.riverSession!!.math(rawCtx)
+        assertTrue(mn.tightened, "locked two-street caller is a condensed range")
+        assertTrue(mn.bet(k("AsQd"), 0.7).ev < mr.bet(k("AsQd"), 0.7).ev, "condensed Nit: the bluff earns less fold equity than the raw read")
         val rq = qj.report(Street.RIVER)!!
         assertEquals(1f, rq.heroMix.getValue("CHECK"), 1e-6f, "Q♥J♥ gives up")
         assertTrue(m.bet(k("QhJh"), 0.7).ev < 0.0)

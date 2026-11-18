@@ -29,7 +29,12 @@ class TurnSpot(
     val effectiveStackBb: Double,
     val facingBetBb: Double = 0.0,
     val extraRange: FloatArray? = null,
+    /** The pot was 3-bet (or more) preflop: villain's range is condensed. */
+    val threeBetPot: Boolean = false,
 ) {
+    /** Villain's range is condensed: 3-bet+ pot, RAISE_CALL flop, or he called hero's flop bet. */
+    val condensedVillain: Boolean get() = threeBetPot || line == FlopLine.RAISE_CALL || (line == FlopLine.BET_CALL && heroIsAggressor)
+
     init {
         require(board.size == 4 && board.toSet().size == 4 && board.all { it in 0..51 }) { "Turn board needs 4 distinct cards" }
         require(heroRange.size == Combos.COUNT && villainRange.size == Combos.COUNT) { "Ranges must have ${Combos.COUNT} combos" }
@@ -209,9 +214,20 @@ data class TurnPolicy(
     val checkRaiseCapConnected: Double = 0.20,
     val checkRaiseCap: Double = 0.28,
     val stackOffBluffMarginBb: Double = 1.0,
-    /** PostflopMassiveExploitOverride: blocker (BF < exploitBlocker) or ≥ semiBluffOuts clean outs, and EV − passive ≥ exploitOverrideBb. */
-    val exploitOverrideBb: Double = 1.5,
-    val exploitBlocker: Double = 0.95,
+    /**
+     * PostflopMassiveExploitOverride: blocker (BF < exploitBlocker) or ≥ exploitOverrideOuts clean outs, EV − passive ≥
+     * max(exploitOverrideBb, exploitOverridePotShare × pot) and a villain over-folding vs MDF; never in RAISE_CALL / 3-bet pots.
+     */
+    val exploitOverrideBb: Double = 2.5,
+    val exploitOverridePotShare: Double = 0.30,
+    val exploitBlocker: Double = 0.90,
+    val exploitOverrideOuts: Int = 9,
+    /** Condensed villain (called a flop bet, RAISE_CALL or 3-bet+ pot): bluff-cap ratio × this. */
+    val condensedBluffScale: Double = 0.35,
+    /** Condensed villain: his P(fold) vs hero's bets / raises × this (the folded mass continues). */
+    val condensedFoldScale: Double = 0.65,
+    /** Condensed villain: an all-in bet / raise needs this equity vs the calling range (or a nut hand). */
+    val stackOffEquity: Float = 0.62f,
     /** ThreeFlushTurnBrake: villain's made flush / straight share of his betting range that triggers it. */
     val brakeVillainMadeShare: Double = 0.08,
     /** Bets ≥ this pot fraction count as "big" for the brake (no raise vs them, no overbet). */

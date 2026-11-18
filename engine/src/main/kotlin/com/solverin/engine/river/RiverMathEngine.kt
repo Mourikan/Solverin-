@@ -337,6 +337,9 @@ class RiverMathEngine(
 
     // ---- equities -------------------------------------------------------------------------------------------------
 
+    /** Condensed range whose fold rate would otherwise be over-stated (3-bet pot, turn raise line, or a locked fold read). */
+    val tightened: Boolean get() = spot.condensedVillain && (spot.threeBetPot || spot.line == RiverLine.TURN_RAISE_CALL || betFoldLocked)
+
     fun eqTotal(h: Int): Float = s.showdown.equity(h, villainNodeRange, nodeIdx).let { if (it.isNaN()) 0f else it }
     fun eqVs(h: Int, w: FloatArray, idx: IntArray): Float = s.showdown.equity(h, w, idx).let { if (it.isNaN()) 0f else it }
 
@@ -390,14 +393,17 @@ class RiverMathEngine(
         val r = respond(h, size)
         if (extra != null) return betMulti(h, x, r)
         val allIn = x >= stack
-        var pc = r.pCall; var pr = r.pRaise
+        // Condensed villain (called two streets / 3-bet pot): he folds less than his unconditional profile.
         val eqC = if (allIn) r.eqContinue else r.eqCall
+        // Tightened condensed villain: bluffs (< 50% vs his calling range) get less fold equity; value keeps the profile.
+        val pFold = if (tightened && eqC < 0.5f) r.pFold * p.condensedFoldScale else r.pFold
+        var pc = r.pCall + (r.pFold - pFold); var pr = r.pRaise
         if (allIn) { pc += pr; pr = 0.0 }
         val fin = pot + 2 * x
         val rk = rake(fin, eqC.toDouble())
         val called = eqC * fin - x - rk
         val evR = if (pr > 0) reraiseResponse(h, x, r).value else 0.0
-        return RiverEvTerms(r.pFold, pc, pr, pot, eqC, fin, x, rk, evR, called, allIn, r.pFold * pot + pc * called + pr * evR,
+        return RiverEvTerms(pFold, pc, pr, pot, eqC, fin, x, rk, evR, called, allIn, pFold * pot + pc * called + pr * evR,
             x, r.defense, r.bNut, r.bFold)
     }
 

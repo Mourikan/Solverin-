@@ -365,7 +365,8 @@ class SolverViewModel(
 
     private fun commit(snapshot: FlowState, r: OracleResult, preferKey: String?) {
         val ranked = r.options.filter { it.evBb.isFinite() }.sortedByDescending { it.evBb }
-        val ordered = (ranked.filter { it.key == preferKey } + ranked + r.options.filter { !it.evBb.isFinite() }).distinct()
+        // Assumed action: a kept deviation, else the recommended (Nash-led) action, then the rest by EV as legal fallbacks.
+        val ordered = (ranked.filter { it.key == preferKey } + listOfNotNull(r.best) + ranked + r.options.filter { !it.evBb.isFinite() }).distinct()
         for (o in ordered) {
             val applied = runCatching { StreetFlowStateMachine.act(snapshot, o.kind, o.toAmount, isHero = true) }.getOrNull() ?: continue
             heroSnapshot = snapshot; committedKey = o.key; flow = applied

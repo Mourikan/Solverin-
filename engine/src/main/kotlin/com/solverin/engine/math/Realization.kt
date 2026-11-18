@@ -70,6 +70,37 @@ object Realization {
         return Terms(bp, init, ps, dp, finish(bp * init * (1 + ps - dp)), finish(bp * init * (1 + ps)))
     }
 
+    /** Set-mining rule: a small pair calling a re-raise needs stack behind ≥ this multiple of the call. */
+    const val SET_MINE_RATIO = 15.0
+    const val DOMINATED_OFFSUIT_VS_RERAISE = 0.85
+    const val WEAK_SUITED_ACE_VS_RERAISE = 0.92
+    const val SMALL_PAIR_NO_SET_ODDS = 0.80
+    const val BLIND_TRASH = 0.85
+    const val SB_FLAT_SANDWICH = 0.88
+
+    /**
+     * Preflop calling-realization penalties (multiplier ≤ 1):
+     *  - facing a re-raise (potLevel ≥ 2): dominated offsuit broadways (ATo, KJo, QJo…), weak suited aces A2s–A9s,
+     *    small pairs 22–99 without 15× set-mining odds;
+     *  - blind defense (single-raised pot): disconnected offsuit trash (52o, 84o, 73o, 42o, 86o, K2o–K6o, Q2o–Q7o, J2o–J7o);
+     *  - SB flat vs an open: sandwiched between the opener and the BB, no initiative (3-bet or fold).
+     */
+    fun callPenalty(h: Int, potLevel: Int, blindPosted: Double, behindToCallRatio: Double): Double {
+        val hi = HandClass.highRank(h); val lo = HandClass.lowRank(h)
+        val pair = HandClass.isPair(h); val suited = HandClass.isSuited(h)
+        var f = 1.0
+        if (potLevel >= 2) {
+            if (!pair && !suited && lo >= 8 && !(hi == 12 && lo >= 10)) f *= DOMINATED_OFFSUIT_VS_RERAISE
+            if (suited && hi == 12 && lo <= 7) f *= WEAK_SUITED_ACE_VS_RERAISE
+            if (pair && hi <= 7 && behindToCallRatio < SET_MINE_RATIO) f *= SMALL_PAIR_NO_SET_ODDS
+        } else if (blindPosted > 0.0) {
+            val gap = hi - lo
+            if (!pair && !suited && hi < 12 && lo < 8 && (gap >= 3 || (hi <= 6 && gap >= 2))) f *= BLIND_TRASH
+            if (blindPosted < 1.0) f *= SB_FLAT_SANDWICH
+        }
+        return f
+    }
+
     /** Hand-independent component (used for range averages). */
     fun factor(inPosition: Boolean, initiative: Boolean, spr: Double, players: Int = 2, potLevel: Int = 1): Float {
         var r = basePos(inPosition) * initiative(initiative, potLevel)

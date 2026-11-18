@@ -17,8 +17,8 @@ object SpanishStrategyExplainer {
     private val L: Locale = Locale.US
 
     fun explain(result: OracleResult, stake: Stake, profile: VillainProfilePreset, committedKey: String? = null): StrategyExplanation {
-        val ranked = result.options.filter { it.evBb.isFinite() }.sortedByDescending { it.evBb }
-        val best = ranked.firstOrNull() ?: return StrategyExplanation("Sin nodo resuelto", listOf("Introduce cartas y posición para resolver el nodo del héroe."))
+        val best = result.best ?: return StrategyExplanation("Sin nodo resuelto", listOf("Introduce cartas y posición para resolver el nodo del héroe."))
+        val ranked = listOf(best) + result.options.filter { it.evBb.isFinite() && it.key != best.key }.sortedByDescending { it.evBb }
         val m = result.math
         val title = "Por qué ${best.label.uppercase(L)} · ${result.nodeLabel}" + if (result.approximate) " (línea aproximada)" else ""
         val points = ArrayList<String>(4)
@@ -35,7 +35,10 @@ object SpanishStrategyExplainer {
         val second = ranked.getOrNull(1)
         val sb = StringBuilder()
         sb.append("1. Veredicto EV: ${best.label} rinde ${bb(best.evBb)} (Nash ${pct(best.frequency.toDouble())}). ")
-        if (second != null) {
+        if (second != null && second.evBb > best.evBb) {
+            sb.append("${second.label} rinde más en bruto (${bb(second.evBb)}, ΔEV ${bb(second.evBb - best.evBb)}) pero la estrategia de Nash ")
+            sb.append("la descarta (tope de faroles / disciplina de rango): ejecutarla al 100% sobre-farolea tu rango.")
+        } else if (second != null) {
             sb.append("Supera a ${second.label} (${bb(second.evBb)}) por ΔEV ${bb(best.evBb - second.evBb)}")
             sb.append(if (best.evBb - second.evBb < 0.1) ": decisión casi indiferente, el margen es mínimo." else ".")
         } else sb.append("Es la única acción legal con EV calculado.")

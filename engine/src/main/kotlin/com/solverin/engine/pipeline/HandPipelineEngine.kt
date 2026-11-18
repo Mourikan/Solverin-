@@ -109,14 +109,17 @@ class HandPipelineEngine(
         val t0 = System.nanoTime()
         val s = c.script; val pf = s.preflop; val st = c.state
         val ctx = PreflopContext(s.stake, effectiveStackBb = s.stackBb, locks = s.locks.preflop)
+        // Opponents' ranges come from the population solve (no hero discipline); hero's own range and node from hero's.
+        val villainCtx = ctx.copy(policy = ctx.policy.copy(heroDiscipline = false))
         val sz = ctx.sizing
-        fun solve(key: SpotKey): SpotAnalysis {
-            require(preflopEngine.isValid(key, ctx)) { "Invalid preflop node $key" }
-            return preflopEngine.analyze(key, ctx)
+        fun solve(key: SpotKey, seat: Seat? = null): SpotAnalysis {
+            val use = if (seat == null || seat == c.hero) ctx else villainCtx
+            require(preflopEngine.isValid(key, use)) { "Invalid preflop node $key" }
+            return preflopEngine.analyze(key, use)
         }
         if (pf.line == PreflopLine.ISO_RAISE_CALL) { isoPreflop(c, t0); return }
-        val rfi = solve(SpotKey.of(Scenario.RFI, pf.opener))
-        val defend = solve(SpotKey.of(Scenario.VS_RFI, pf.responder, pf.opener))
+        val rfi = solve(SpotKey.of(Scenario.RFI, pf.opener), Seat.OPENER)
+        val defend = solve(SpotKey.of(Scenario.VS_RFI, pf.responder, pf.opener), Seat.RESPONDER)
         val weights = HashMap<Seat, FloatArray>()
         val heroNode: SpotAnalysis
         val size: Double
@@ -129,7 +132,7 @@ class HandPipelineEngine(
                 st.initiative = Seat.OPENER
             }
             PreflopLine.THREE_BET_CALL -> {
-                val vs3 = solve(SpotKey.of(Scenario.VS_3BET, pf.opener, pf.responder))
+                val vs3 = solve(SpotKey.of(Scenario.VS_3BET, pf.opener, pf.responder), Seat.OPENER)
                 weights[Seat.OPENER] = FloatArray(com.solverin.engine.core.HandClass.COUNT) { rfi.strategy.raise(it) * vs3.strategy.call(it) }
                 weights[Seat.RESPONDER] = defend.strategy.raiseWeights()
                 size = sz.threeBet(pf.opener, pf.responder)
@@ -138,7 +141,7 @@ class HandPipelineEngine(
             }
             PreflopLine.ISO_RAISE_CALL -> error("handled by isoPreflop")
             PreflopLine.RFI_COLD_CALL_BB_CALL -> {
-                val squeeze = solve(SpotKey.of(Scenario.SQUEEZE, Position.BB, pf.opener, pf.responder))
+                val squeeze = solve(SpotKey.of(Scenario.SQUEEZE, Position.BB, pf.opener, pf.responder), Seat.THIRD)
                 weights[Seat.OPENER] = rfi.strategy.raiseWeights()
                 weights[Seat.RESPONDER] = FloatArray(com.solverin.engine.core.HandClass.COUNT) { defend.strategy.call(it) }
                 weights[Seat.THIRD] = FloatArray(com.solverin.engine.core.HandClass.COUNT) { squeeze.strategy.call(it) }
@@ -342,7 +345,8 @@ class HandPipelineEngine(
         val st = c.state
         val extra = c.extraOf(me, villain)
         return TurnSpot(st.board, st.ranges.getValue(me), st.ranges.getValue(villain), c.ip(me, villain), st.initiative == me,
-            flopLineOf(c, c.flopKind ?: StreetKind.CHECK_CHECK), st.potBb, st.effectiveStackBb, facing, extra?.let { st.ranges.getValue(it) })
+            flopLineOf(c, c.flopKind ?: StreetKind.CHECK_CHECK), st.potBb, st.effectiveStackBb, facing, extra?.let { st.ranges.getValue(it) },
+            threeBetPot = c.threeBetPot)
     }
 
     private fun turn(c: Ctx, board: IntArray, river: Int?) {
@@ -428,7 +432,7 @@ class HandPipelineEngine(
         val extra = c.extraOf(c.hero, villain)
         val facing = d.villainBetFraction?.let { minOf(it * pot0, eff0) } ?: 0.0
         val spot = RiverSpot(board, st.ranges.getValue(c.hero), st.ranges.getValue(villain), c.ip(c.hero, villain), st.initiative == c.hero,
-            riverLineOf(c), pot0, eff0, facing, extra?.let { st.ranges.getValue(it) })
+            riverLineOf(c), pot0, eff0, facing, extra?.let { st.ranges.getValue(it) }, threeBetPot = c.threeBetPot)
         val session = RiverSession(spot)
         val a = session.analyze(ctx)
         val h = c.heroCombo

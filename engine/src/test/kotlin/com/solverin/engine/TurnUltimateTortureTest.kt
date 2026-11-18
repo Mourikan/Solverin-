@@ -63,7 +63,9 @@ class TurnUltimateTortureTest {
             val jam = lm.raiseVsBet(k(x), 70.0, 30.0, lm.villainFirstAction.raise)
             assertTrue(jam.ev > 0.0 && jam.ev > la.terms(TurnAction.CALL, k(x))!!.ev, "$x: locked over-folder → jam exploit")
         }
-        assertTrue(la.frequency(TurnAction.RAISE) > a.frequency(TurnAction.RAISE), "lock raises more")
+        // Condensed RAISE_CALL pot: the stack-off guard keeps a +EV-by-lock bluff-jam out of the strategy (no equity / nuts).
+        for (x in listOf("QsJs", "QsTs")) assertEquals(0f, la.frequency(TurnAction.RAISE, k(x)), 1e-6f, "$x: no bluff stack-off vs a condensed range")
+        assertTrue(la.frequency(TurnAction.RAISE) >= a.frequency(TurnAction.RAISE) - 1e-9, "the lock never removes value raises")
         // Endogenous scaling: committed / condensed lines fold less than open lines.
         val open = direct("9s6s2d3c", caller, threeBettor, true, false, FlopLine.CHECK_CHECK, 10.0, 150.0, 6.6).math(ctx)
         val bc = direct("9s6s2d3c", caller, threeBettor, true, false, FlopLine.BET_CALL, 10.0, 150.0, 6.6).math(ctx)

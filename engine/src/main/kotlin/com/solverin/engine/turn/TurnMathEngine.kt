@@ -364,9 +364,15 @@ class TurnMathEngine(
     }
 
     /** PostflopMassiveExploitOverride eligibility: nut blocker (BF < exploitBlocker) or ≥ semiBluffOuts clean outs vs [range]. */
+    /**
+     * Condensed range whose fold rate would otherwise be over-stated: 3-bet pot, RAISE_CALL, or a villain who called
+     * hero's flop bet while his fold rate is node-locked (a locked read is unconditional, his surviving range is not).
+     */
+    val tightened: Boolean get() = spot.condensedVillain && (spot.threeBetPot || spot.line == FlopLine.RAISE_CALL || responseFoldLocked)
+
     fun exploitEligible(h: Int, range: FloatArray): Boolean {
         val o = outsVs(range)
-        return (nutTotal > 0.0 && blockerFactor(h) < p.exploitBlocker) || (o.behind(h) && o.clean[h] >= p.semiBluffOuts)
+        return (nutTotal > 0.0 && blockerFactor(h) < p.exploitBlocker) || (o.behind(h) && o.clean[h] >= p.exploitOverrideOuts)
     }
 
     /** Semi-bluff priority: ≥ semiBluffOuts clean outs vs [range], or blocks villain's nut combos (BF < 1). */
@@ -435,11 +441,13 @@ class TurnMathEngine(
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
         val pr0 = leveraged(h, resp.probabilities(h), level, potBefore + a + (x - vInv), stack - x)
-        val pf = pr0[0]
-        var pc = pr0[1]; var pr = pr0[2]
-        if (x >= stack) { pc += pr; pr = 0.0 }
         val callRange = if (x >= stack) resp.continueRange else resp.call
         val br = called(h, callRange, potBefore + a + (x - vInv), a, stack - x, aggressor = true)
+        // Condensed villain (tightened): a bluff / semi-bluff (< 50% vs his calling range) gets less fold equity than his
+        // unconditional profile says; value hands keep the profile (the extra callers would be weaker, never stronger).
+        val pf = if (tightened && br.equity < 0.5f) pr0[0] * ctx.policy.condensedFoldScale else pr0[0]
+        var pc = pr0[1] + (pr0[0] - pf); var pr = pr0[2]
+        if (x >= stack) { pc += pr; pr = 0.0 }
         val evR = if (pr > 0) reraiseResponse(h, potBefore + a, x, vInv, a, resp.raise, level).value else 0.0
         return terms(pf, pc, pr, potBefore, br, br.value, evR)
     }

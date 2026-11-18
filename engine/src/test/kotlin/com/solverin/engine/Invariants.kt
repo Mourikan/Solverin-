@@ -38,8 +38,8 @@ object Invariants {
         val p = ctx.policy
         for (x in 0 until HandClass.COUNT) {
             val d = a.decision(x)
-            val call = if (d.evCall.isNaN()) Double.NEGATIVE_INFINITY else d.evCall - p.callEdgeBb
-            val raise = if (d.evRaise.isNaN()) Double.NEGATIVE_INFINITY else d.evRaise - p.raiseEdgeBb
+            val call = if (d.evCall.isNaN()) Double.NEGATIVE_INFINITY else d.evCall - p.callEdge(a.key.scenario, a.key.hero)
+            val raise = if (d.evRaise.isNaN()) Double.NEGATIVE_INFINITY else d.evRaise - p.raiseEdge(a.key.scenario, a.key.hero)
             val best = maxOf(0.0, call, raise)
             val bestNoRaise = maxOf(0.0, call)
             val name = "${a.key} ${HandClass.name(x)}"

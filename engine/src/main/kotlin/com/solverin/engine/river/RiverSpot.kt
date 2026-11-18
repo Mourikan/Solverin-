@@ -31,7 +31,14 @@ class RiverSpot(
     val effectiveStackBb: Double,
     val facingBetBb: Double = 0.0,
     val extraRange: FloatArray? = null,
+    /** The pot was 3-bet (or more) preflop: villain's range is condensed. */
+    val threeBetPot: Boolean = false,
 ) {
+    /** Villain called hero's turn barrel (two streets of calls). */
+    val villainCalledTwoStreets: Boolean get() = (line == RiverLine.BARREL_CALL || line == RiverLine.TURN_RAISE_CALL) && heroIsAggressor
+    /** Villain's range is condensed: 3-bet+ pot, a turn raise / call line, or he called hero's turn barrel. */
+    val condensedVillain: Boolean get() = threeBetPot || line == RiverLine.TURN_RAISE_CALL || villainCalledTwoStreets
+
     init {
         require(board.size == 5 && board.toSet().size == 5 && board.all { it in 0..51 }) { "River board needs 5 distinct cards" }
         require(heroRange.size == Combos.COUNT && villainRange.size == Combos.COUNT) { "Ranges must have ${Combos.COUNT} combos" }
@@ -178,10 +185,17 @@ data class RiverPolicy(
     val committedFoldMax: Double = 0.25,
     val committedOddsLow: Double = 0.10,
     val committedOddsHigh: Double = 0.35,
-    /** PostflopMassiveExploitOverride: B_nut < exploitBlocker and EV − check ≥ min(exploitOverrideBb, exploitPotShare × pot). */
-    val exploitOverrideBb: Double = 3.0,
-    val exploitPotShare: Double = 0.15,
-    val exploitBlocker: Double = 0.95,
+    /**
+     * PostflopMassiveExploitOverride: B_nut < exploitBlocker and EV − passive ≥ max(exploitOverrideBb, exploitPotShare × pot);
+     * off when the villain called two streets without over-folding the river (condensed range).
+     */
+    val exploitOverrideBb: Double = 4.0,
+    val exploitPotShare: Double = 0.25,
+    val exploitBlocker: Double = 0.75,
+    /** Condensed villain: bluff-cap ratio × this, P(fold) × condensedFoldScale, all-in needs stackOffEquity vs the call range. */
+    val condensedBluffScale: Double = 0.35,
+    val condensedFoldScale: Double = 0.65,
+    val stackOffEquity: Float = 0.62f,
     /** Four-flush / four-straight shield. */
     val fourCardShield: Boolean = true,
 )

@@ -46,7 +46,9 @@ class PreflopMathEngine(
         else eq.multiway(eq.vs(h, main), eq.vs(h, n.villainRanges[1]))
         val s = spr(pot, to)
         val r = Realization.compute(h, main, n.heroInPosition, aggressor = false, spr = s, players = players, potLevel = n.potLevel)
-        val rEff = r.value * (1 - n.overcallBehind * (1 - Realization.MULTIWAY_DECAY))
+        val penalty = if (!ctx.policy.heroDiscipline) 1.0
+        else Realization.callPenalty(h, n.potLevel, n.heroInvested, if (invest > 0) behind(to) / invest else Double.POSITIVE_INFINITY)
+        val rEff = r.value * penalty * (1 - n.overcallBehind * (1 - Realization.MULTIWAY_DECAY))
         val eqR = minOf(e * rEff, MAX_EQR.toDouble())
         val rk = rake(pot, to, eqR)
         var impl = implied.ev(h, main, pot, behind(to), n.heroInPosition)

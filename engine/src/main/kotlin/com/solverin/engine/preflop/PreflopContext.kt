@@ -6,6 +6,7 @@ import com.solverin.engine.core.Stake
 import com.solverin.engine.math.RakeAttribution
 import com.solverin.engine.model.NodeLocks
 import com.solverin.engine.model.VillainProfile
+import com.solverin.engine.range.Scenario
 
 data class PreflopContext(
     val stake: Stake,
@@ -70,9 +71,37 @@ data class StakePolicy(
      * Pure-exploit override (3bet / squeeze nodes): EV(raise) >= massiveExploitEvBb against a main villain
      * folding at least massiveOverfoldMargin above 1 − MDF executes the raise regardless of BlockerFactor.
      */
-    val massiveExploitEvBb: Double = 1.10,
-    val massiveOverfoldMargin: Double = 0.03,
+    val massiveExploitEvBb: Double = 1.60,
+    val massiveOverfoldMargin: Double = 0.08,
+    /** Facing a 3-bet / squeeze / 4-bet / 5-bet: extra net EV a continue (call / re-raise) must clear vs folding. */
+    val facingReraiseCallEdgeBb: Double = 0.35,
+    val facingReraiseRaiseEdgeBb: Double = 0.20,
+    /** Blind defense vs an open: a call / 3-bet must beat folding by this margin (BB closes the action, SB does not). */
+    val bbDefenseMarginBb: Double = 0.08,
+    val sbDefenseMarginBb: Double = 0.12,
+    /**
+     * Hero discipline (re-raise / blind-defense margins, calling-realization penalties). The pipeline turns it off when
+     * it builds an opponent's range from the solved node of his seat: those rules are hero's, not the population's.
+     */
+    val heroDiscipline: Boolean = true,
 ) {
+    private fun facingReraise(s: Scenario) = s == Scenario.VS_3BET || s == Scenario.VS_4BET || s == Scenario.VS_5BET ||
+        s == Scenario.VS_SQUEEZE_OPENER || s == Scenario.VS_SQUEEZE_CALLER || s == Scenario.VS_3BET_COLD
+
+    private fun blindMargin(s: Scenario, hero: Position) = if (s == Scenario.VS_RFI || s == Scenario.SQUEEZE) when (hero) {
+        Position.BB -> bbDefenseMarginBb
+        Position.SB -> sbDefenseMarginBb
+        else -> 0.0
+    } else 0.0
+
+    /** Net EV a call must clear vs folding at node ([s], [hero]): stake edge + blind-defense / re-raise discipline margins. */
+    fun callEdge(s: Scenario, hero: Position): Double =
+        callEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + if (facingReraise(s)) facingReraiseCallEdgeBb else 0.0
+
+    /** Net EV a raise must clear vs folding at node ([s], [hero]). */
+    fun raiseEdge(s: Scenario, hero: Position): Double =
+        raiseEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + if (facingReraise(s)) facingReraiseRaiseEdgeBb else 0.0
+
     companion object {
         fun of(stake: Stake): StakePolicy = when (stake) {
             Stake.NL2 -> StakePolicy(0.10, 0.02, 0.04)

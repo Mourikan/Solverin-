@@ -61,12 +61,18 @@ class RiverUltimateTortureTest {
         assertTrue(bAq.ev - bQj.ev > 3.0, "A♠Q♦ bluff EV significantly higher")
         assertEquals(0f, a.frequency(RiverAction.TRIPLE_BARREL, qj), 1e-6f, "Q♥J♥ gives up")
         for (bigOver in listOf(1.25, 1.5)) assertTrue(m.bet(aq, bigOver).ev > m.bet(qj, bigOver).ev, "overbet EV with the nut blocker")
-        // Against an over-folding read the bluff budget goes to the nut blocker, never to Q♥J♥.
-        val over = s.analyze(ctx.copy(locks = RiverNodeLocks.foldToRiverBet(0.55)))
+        // After two streets of calls the override stays shut even with an over-fold read.
+        val shut = s.analyze(ctx.copy(locks = RiverNodeLocks.foldToRiverBet(0.55)))
+        RiverInvariants.all(shut, "two-street caller")
+        assertTrue(shut.frequency(RiverAction.TRIPLE_BARREL, aq) <= a.frequency(RiverAction.TRIPLE_BARREL, aq) + 1e-6f, "no override after two calls")
+        // On an uncondensed line, the bluff budget goes to the nut blocker, never to Q♥J♥.
+        val s2 = direct("KsTs6h2d3s", FlopBoards.CO_OPEN, FlopBoards.BB_DEFEND, false, true, RiverLine.CHECK_CHECK_TURN, 30.0, 80.0)
+        val over = s2.analyze(ctx.copy(locks = RiverNodeLocks.foldToRiverBet(0.55)))
         RiverInvariants.all(over, "over-folder")
-        assertTrue(over.frequency(RiverAction.TRIPLE_BARREL, aq) > 0.5f, "A♠Q♦ bluffs")
-        assertEquals(0f, over.frequency(RiverAction.TRIPLE_BARREL, qj), 1e-6f, "Q♥J♥ still checks")
-        assertTrue(over.ev(RiverAction.TRIPLE_BARREL, qj) > over.ev(RiverAction.CHECK, qj) && over.capped(qj), "Q♥J♥ loses the budget to better blockers")
+        val act = over.betAction!!
+        assertTrue(over.frequency(act, aq) > 0.5f, "A♠Q♦ bluffs")
+        assertEquals(0f, over.frequency(act, qj), 1e-6f, "Q♥J♥ still checks")
+        assertTrue(over.ev(act, qj) <= over.ev(RiverAction.CHECK, qj) || over.capped(qj), "Q♥J♥ loses the budget to better blockers")
     }
 
     // ---- Spot 2: bluff-catcher selection by anti-blockers ---------------------------------------------------

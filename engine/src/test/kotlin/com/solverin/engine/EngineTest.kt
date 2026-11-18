@@ -175,10 +175,11 @@ class EngineTest {
         assertEquals(1.5 / 5.5, r.potOdds, 1e-9)
         assertTrue(r.defend >= r.mdf, "BB defend ${r.defend} < MDF ${r.mdf}")
         val nl200 = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, BTN), PreflopContext(Stake.NL200)).blindDefense)
-        assertTrue(nl200.defend in 0.50..0.70, "BB NL200 ${nl200.defend}")
+        // Blind-defense discipline (+0.08 bb margin, trash-offsuit realization penalty): still above MDF 37.5%.
+        assertTrue(nl200.defend in 0.40..0.70, "BB NL200 ${nl200.defend}")
         for (o in listOf(UTG, HJ, CO)) {
             val d = assertNotNull(engine.analyze(SpotKey.of(Scenario.VS_RFI, BB, o), PreflopContext(Stake.NL200)).blindDefense)
-            assertTrue(d.defend > 0.25, "BB NL200 vs $o ${d.defend}")
+            assertTrue(d.defend > 0.22, "BB NL200 vs $o ${d.defend}")
         }
         assertTrue(r.requiredEquityRealized > r.requiredEquity)
         assertEquals(1f, a.strategy.fold(h("72o")))
@@ -267,7 +268,8 @@ class EngineTest {
         val reach = assertNotNull(vs3.reach)
         for (x in 0 until HandClass.COUNT) assertEquals(rfi.strategy.raise(x), reach[x])
         assertEquals(rfi.strategy.raiseFrequency(), vs3.reachFrequency(), 1e-9)
-        assertTrue(vs3.foldFrequency() in 0.15..0.75, "BTN folds ${vs3.foldFrequency()} vs 3bet")
+        // Re-raise discipline (+0.35 bb call margin, dominated-hand realization penalty) folds a wide BTN range more.
+        assertTrue(vs3.foldFrequency() in 0.15..0.82, "BTN folds ${vs3.foldFrequency()} vs 3bet")
         val five = engine.analyze(SpotKey.of(Scenario.VS_5BET, BTN, BB), nl50)
         for (x in 0 until HandClass.COUNT) {
             val t = vs3.raiseTerms!![x]

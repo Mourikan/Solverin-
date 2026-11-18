@@ -50,7 +50,8 @@ class SolverViewModelTest {
         assertTrue("Nash frequency in [0,1]", s.options.all { it.frequency in 0f..1f })
         assertEquals("exactly one Max-EV option", 1, s.options.count { it.isMaxEv })
         val best = s.maxEvAction!!
-        assertTrue(s.options.all { it.evBb <= best.evBb + 1e-9 })
+        // The recommendation follows the engine's capped strategy: it is the top-frequency action (never a 0% action).
+        assertTrue(best.frequency >= s.options.maxOf { it.frequency } - 0.05f - 1e-6f)
     }
 
     @Test

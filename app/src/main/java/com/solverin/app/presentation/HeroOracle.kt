@@ -86,7 +86,31 @@ data class OracleResult(
     val latencyMs: Double,
     val math: NodeMath? = null,
 ) {
-    val best: OracleOption? get() = options.filter { it.evBb.isFinite() }.maxByOrNull { it.evBb }
+    /**
+     * Recommended action: the engine's own strategy decides (its frequencies already carry the bluff caps, shields and
+     * preflop discipline margins that a raw EV argmax would bypass). Inside a mixed band (frequencies within
+     * [MIX_BAND]) EV breaks the tie, except that a marginal aggressive edge (< [MARGINAL_AGGRESSION_BB] over the best
+     * passive action) never turns into a 100% deterministic bluff / raise.
+     */
+    val best: OracleOption? get() {
+        val fin = options.filter { it.evBb.isFinite() }
+        if (fin.isEmpty()) return null
+        val topFreq = fin.maxOf { it.frequency }
+        if (topFreq <= 0f) return fin.maxByOrNull { it.evBb }
+        val top = fin.filter { it.frequency >= topFreq - MIX_BAND }
+        val aggr = top.filter { it.kind == ActKind.BET || it.kind == ActKind.RAISE || it.kind == ActKind.ALL_IN }
+        val passive = top - aggr.toSet()
+        if (aggr.isNotEmpty() && passive.isNotEmpty()) {
+            val a = aggr.maxBy { it.evBb }; val p = passive.maxBy { it.evBb }
+            return if (a.evBb - p.evBb < MARGINAL_AGGRESSION_BB) p else a
+        }
+        return top.maxByOrNull { it.evBb }
+    }
+
+    companion object {
+        const val MIX_BAND = 0.05f
+        const val MARGINAL_AGGRESSION_BB = 0.12
+    }
 }
 
 /**
