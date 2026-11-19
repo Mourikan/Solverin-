@@ -55,6 +55,12 @@ class DecisionAuditFixesTest {
                 for (x in listOf("KK", "QQ", "AKs")) assertTrue(a.strategy.fold(h(x)) < 0.5f, "$stake $k $x continues vs the 4-bet")
                 for (x in listOf("AQo", "AJo", "ATo", "KQo")) assertEquals(1f, a.strategy.fold(h(x)), 1e-6f, "$stake $k $x folds")
             }
+            // Facing a 5-bet jam: KK always calls; offsuit / suited connectors and underpairs never split.
+            for (k in listOf(SpotKey.of(Scenario.VS_5BET, Position.UTG, Position.HJ), SpotKey.of(Scenario.VS_5BET, Position.HJ, Position.CO),
+                             SpotKey.of(Scenario.VS_5BET, Position.CO, Position.BTN), SpotKey.of(Scenario.VS_5BET, Position.BTN, Position.BB)))
+                assertTrue(engine.analyze(k, ctx).strategy.fold(h("KK")) < 0.5f, "$stake $k KK calls the 5-bet")
+            val vs4 = engine.analyze(SpotKey.of(Scenario.VS_4BET, Position.BTN, Position.CO), ctx)
+            assertTrue(vs4.strategy.fold(h("T9s")) <= vs4.strategy.fold(h("T9o")) + 1e-6f, "$stake T9s continues at least as often as T9o")
         }
     }
 
@@ -190,7 +196,7 @@ class DecisionAuditFixesTest {
         assertEquals(Realization.callPenalty(h("ATs"), 3, 0.0, 10.0) / Realization.DOMINATED_VS_FOUR_BET * Realization.DOMINATED_VS_FOUR_BET,
             Realization.callPenalty(h("ATs"), 3, 0.0, 10.0), 1e-12)
         assertTrue(Realization.callPenalty(h("ATo"), 3, 0.0, 10.0) <= Realization.callPenalty(h("ATs"), 3, 0.0, 10.0), "ATo never realizes more than ATs vs a 4-bet")
-        val pairs = listOf("66", "55", "44", "33", "22")
+        val pairs = listOf("99", "88", "77", "66", "55", "44", "33", "22")
         for (stake in Stake.entries) {
             val a = engine.analyze(SpotKey.of(Scenario.SQUEEZE, Position.BB, Position.UTG, Position.HJ), PreflopContext(stake))
             for (i in 1 until pairs.size) {
