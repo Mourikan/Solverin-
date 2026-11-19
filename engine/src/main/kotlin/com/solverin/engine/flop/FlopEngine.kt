@@ -89,7 +89,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                         heroIdx, m.hero, ratio, fb, fc, null,
                         aggEv = { bets[it]!!.ev }, passiveEv = { check[it]!!.ev },
                         isValue = { m.eqVs(resp.continueRange).equity(it) >= 0.5f || m.isNut(it) }, foldAllowed = { false },
-                        exempt = { h -> (foldAll >= 1 - m.villainModel.mdf(pot, b) + p.overrideOverfoldMargin && m.outs[h] >= p.exploitOverrideOuts &&
+                        exempt = { h -> (!ctx.locks.nitRead && foldAll >= 1 - m.villainModel.mdf(pot, b) + p.overrideOverfoldMargin && m.outs[h] >= p.exploitOverrideOuts &&
                             bets[h]!!.ev - check[h]!!.ev >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot)).also { if (it) fired[h] = true } },
                     )
                     var total = 0.0
@@ -165,7 +165,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
             foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
-            exempt = { h -> (raiseResp.foldTotal / raiseResp.priorTotal >= 1 - m.villainModel.mdf(potBefore, raiseSize) + p.overrideOverfoldMargin &&
+            exempt = { h -> (!ctx.locks.nitRead && raiseResp.foldTotal / raiseResp.priorTotal >= 1 - m.villainModel.mdf(potBefore, raiseSize) + p.overrideOverfoldMargin &&
                 m.outs[h] >= p.exploitOverrideOuts &&
                 (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * potBefore))
                 .also { if (it) firedR[h] = true } },

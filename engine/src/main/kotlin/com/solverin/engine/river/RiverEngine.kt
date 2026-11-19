@@ -35,8 +35,9 @@ class RiverSession(val spot: RiverSpot) {
     /**
      * Override gate: after two streets of calls it stays shut unless the villain over-folds vs MDF at this price on his
      * unconditional population profile (a locked Nit / station read describes his whole range, not what is left of it).
+     * Never vs a NIT read: his surviving range is condensed toward strong hands.
      */
-    private fun overrideOpen(m: RiverMathEngine, overfolds: Boolean) = overfolds && !m.station && !(spot.condensedVillain && m.betFoldLocked)
+    private fun overrideOpen(m: RiverMathEngine, overfolds: Boolean) = overfolds && !m.station && !m.nit && !(spot.condensedVillain && m.betFoldLocked)
 
     /** Thin value vs a range that called two streets: below thinValueVsCallers vs his calling range, check instead. */
     private fun thinValueBlocked(m: RiverMathEngine, p: RiverPolicy, t: RiverEvTerms) =

@@ -95,10 +95,9 @@ class PreflopEngine(
         val fallbackCall = FloatArray(n)
         val b = SpotStrategy.Builder()
         // Continue discipline: facing a re-raise, and blind defense vs an open, a continue must beat folding by a margin.
-        val extraCall = ctx.policy.callEdge(key.scenario, key.hero) - ctx.policy.callEdgeBb
-        val extraRaise = ctx.policy.raiseEdge(key.scenario, key.hero) - ctx.policy.raiseEdgeBb
-
         for (h in 0 until n) {
+            val extraCall = ctx.policy.callEdge(key.scenario, key.hero, h) - ctx.policy.callEdgeBb
+            val extraRaise = ctx.policy.raiseEdge(key.scenario, key.hero, h) - ctx.policy.raiseEdgeBb
             var raiseAdj = Double.NEGATIVE_INFINITY
             if (raiseNode != null) {
                 valueEq[h] = math.valueEquity(h, raiseNode)

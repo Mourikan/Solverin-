@@ -4,6 +4,7 @@ import com.solverin.engine.core.RakeStructure
 import com.solverin.engine.core.Stake
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.math.RakeAttribution
+import com.solverin.engine.model.NitRead
 
 /** How the turn was played before this river. */
 enum class RiverLine { BARREL_CALL, CHECK_CHECK_TURN, TURN_RAISE_CALL, MULTIWAY_3WAY }
@@ -116,6 +117,8 @@ data class RiverNodeLocks(val locks: Map<RiverVillainNode, RiverNodeLock> = empt
     operator fun get(n: RiverVillainNode): RiverNodeLock? = locks[n]
     fun with(n: RiverVillainNode, l: RiverNodeLock) = RiverNodeLocks(locks + (n to l))
     operator fun plus(o: RiverNodeLocks) = RiverNodeLocks(locks + o.locks)
+    /** NIT read (over-folder with a value-heavy range): PostflopMassiveExploitOverride is closed. */
+    val nitRead: Boolean get() = NitRead.of(locks.values.map { it.fold }, locks.values.map { it.valueShare })
 
     companion object {
         val NONE = RiverNodeLocks()

@@ -114,11 +114,11 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
     private fun overrideThreshold(p: TurnPolicy, pot: Double) = maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot)
 
     /**
-     * No override in RAISE_CALL / 3-bet pots, vs a station or a locked read that already called (Nit), and only vs a
-     * villain over-folding by at least overrideOverfoldMargin above 1 − MDF.
+     * No override in RAISE_CALL / 3-bet pots, vs a station, vs a NIT read (never), vs a locked read that already called,
+     * and only vs a villain over-folding by at least overrideOverfoldMargin above 1 − MDF.
      */
     private fun overrideOpen(m: TurnMathEngine, overfolds: Boolean) = overfolds && !spot.threeBetPot && spot.line != FlopLine.RAISE_CALL &&
-        !m.station && !(spot.condensedVillain && m.responseFoldLocked)
+        !m.station && !m.nit && !(spot.condensedVillain && m.responseFoldLocked)
 
     /** Thin value vs a range that already called: below thinValueVsCallers vs his calling range, check instead. */
     private fun thinValueBlocked(m: TurnMathEngine, p: TurnPolicy, t: TurnEvTerms) =

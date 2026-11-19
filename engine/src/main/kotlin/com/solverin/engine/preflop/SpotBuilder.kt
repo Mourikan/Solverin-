@@ -147,7 +147,10 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 val z = sz.fourBet(y)
                 val pot = y + z + blinds - h.blindBb - v.blindBb
                 val raw = vm.openerVs3Bet(v, h).raise
-                val fourBetRange = if (polarized(VillainNode.VS_3BET, v, h)) raw else collapse(raw, FOUR_BET_TOP)
+                // CO / BB: the 4-bettor's range is condensed further (StakePolicy.fourBetCoBbRangeTop) unless a polarizing lock.
+                val coBb = h == Position.CO || h == Position.BB
+                val fourBetRange = if (polarized(VillainNode.VS_3BET, v, h)) raw
+                else collapse(raw, if (coBb) minOf(FOUR_BET_TOP, ctx.policy.fourBetCoBbRangeTop) else FOUR_BET_TOP)
                 val ip = h.isInPositionVs(v)
                 val call = CallNode(pot, y, z, listOf(fourBetRange), ip, 0.0, 3,
                     realizationFactor = if (!ip && discipline) OOP_VS_FOUR_BET else 1.0)

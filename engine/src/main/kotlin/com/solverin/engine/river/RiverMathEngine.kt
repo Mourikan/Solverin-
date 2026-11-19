@@ -208,6 +208,8 @@ class RiverMathEngine(
     }
 
     val betFoldLocked: Boolean get() = ctx.locks[RiverVillainNode.VS_BET]?.fold != null || ctx.locks[RiverVillainNode.VS_OVERBET]?.fold != null
+    /** NIT node-lock read: no PostflopMassiveExploitOverride. */
+    val nit: Boolean get() = ctx.locks.nitRead
     val station: Boolean get() = ctx.locks[RiverVillainNode.VS_BET]?.fold?.let { it <= p.stationFold } ?: false
 
     /** Villain's per-hand response to hero's bet: probabilities, equities vs the call / raise subsets. */

@@ -1,5 +1,6 @@
 package com.solverin.engine.preflop
 
+import com.solverin.engine.core.HandClass
 import com.solverin.engine.core.Position
 import com.solverin.engine.core.RakeStructure
 import com.solverin.engine.core.Stake
@@ -88,7 +89,28 @@ data class StakePolicy(
     val mpOpenEdgeBb: Double = 0.08,
     /** VS_4BET: a 5-bet jam that is not for value needs the 4-bettor to fold at least this often. */
     val fiveBetBluffMinFold: Double = 0.42,
+    /**
+     * VS_4BET from CO / BB (the seats that bleed most facing a 4-bet: CO 3-bets into the button / blinds and plays the
+     * 4-bet pot without position or initiative vs BTN, BB is always OOP): extra net EV a flat / 5-bet must clear on top
+     * of the re-raise margins, so dominated hands (AJo, KQo, KJs, QJs, T9s, middle pairs) fold.
+     */
+    val fourBetCoBbCallEdgeBb: Double = 0.45,
+    val fourBetCoBbRaiseEdgeBb: Double = 0.25,
+    /** VS_4BET from CO / BB: the 4-bettor's range (no polarizing lock) collapses to this top share of all hands. */
+    val fourBetCoBbRangeTop: Double = 0.035,
 ) {
+    private fun fourBetCoBb(s: Scenario, hero: Position) = heroDiscipline && s == Scenario.VS_4BET && (hero == Position.CO || hero == Position.BB)
+
+    /**
+     * Per-hand edges: the CO / BB 4-bet margins target marginal / dominated hands; premiums (QQ+, AK) keep their
+     * max-EV line facing the 4-bet.
+     */
+    fun callEdge(s: Scenario, hero: Position, h: Int): Double =
+        callEdge(s, hero) - if (fourBetCoBb(s, hero) && premiumVsFourBet(h)) fourBetCoBbCallEdgeBb else 0.0
+
+    fun raiseEdge(s: Scenario, hero: Position, h: Int): Double =
+        raiseEdge(s, hero) - if (fourBetCoBb(s, hero) && premiumVsFourBet(h)) fourBetCoBbRaiseEdgeBb else 0.0
+
     private fun facingReraise(s: Scenario) = s == Scenario.VS_3BET || s == Scenario.VS_4BET || s == Scenario.VS_5BET ||
         s == Scenario.VS_SQUEEZE_OPENER || s == Scenario.VS_SQUEEZE_CALLER || s == Scenario.VS_3BET_COLD
 
@@ -100,14 +122,21 @@ data class StakePolicy(
 
     /** Net EV a call must clear vs folding at node ([s], [hero]): stake edge + blind-defense / re-raise discipline margins. */
     fun callEdge(s: Scenario, hero: Position): Double =
-        callEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + if (facingReraise(s)) facingReraiseCallEdgeBb else 0.0
+        callEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + (if (facingReraise(s)) facingReraiseCallEdgeBb else 0.0) +
+            if (fourBetCoBb(s, hero)) fourBetCoBbCallEdgeBb else 0.0
 
     /** Net EV a raise must clear vs folding at node ([s], [hero]). */
     fun raiseEdge(s: Scenario, hero: Position): Double =
         raiseEdgeBb + if (!heroDiscipline) 0.0 else blindMargin(s, hero) + (if (facingReraise(s)) facingReraiseRaiseEdgeBb else 0.0) +
-            if (s == Scenario.RFI && hero == Position.HJ) mpOpenEdgeBb else 0.0
+            (if (s == Scenario.RFI && hero == Position.HJ) mpOpenEdgeBb else 0.0) + if (fourBetCoBb(s, hero)) fourBetCoBbRaiseEdgeBb else 0.0
 
     companion object {
+        /** QQ+, AKs, AKo. */
+        fun premiumVsFourBet(h: Int): Boolean {
+            val hi = HandClass.highRank(h); val lo = HandClass.lowRank(h)
+            return (HandClass.isPair(h) && hi >= 10) || (hi == 12 && lo == 11)
+        }
+
         fun of(stake: Stake): StakePolicy = when (stake) {
             Stake.NL2 -> StakePolicy(0.10, 0.02, 0.04)
             // NL5–NL25: +0.06 bb on every flat (rake cap vs a pool that no longer pays off like NL2).

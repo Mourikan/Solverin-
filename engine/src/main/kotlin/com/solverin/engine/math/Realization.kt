@@ -82,7 +82,8 @@ object Realization {
     /**
      * Preflop calling-realization penalties (multiplier ≤ 1):
      *  - facing a re-raise (potLevel ≥ 2): dominated offsuit broadways (ATo, KJo, QJo…), weak suited aces A2s–A9s,
-     *    small pairs 22–99 without 15× set-mining odds;
+     *    small pairs 22–99 without 15× set-mining odds; facing a 4-bet also AQo / AJo / KQo / ATs / KJs / QJs, suited
+     *    connectors T9s and below and middle pairs 66–99;
      *  - blind defense (single-raised pot): disconnected offsuit trash (52o, 84o, 73o, 42o, 86o, K2o–K6o, Q2o–Q7o, J2o–J7o);
      *  - SB flat vs an open: sandwiched between the opener and the BB, no initiative (3-bet or fold).
      */
@@ -97,6 +98,9 @@ object Realization {
             // Facing a 4-bet: easily dominated hands (AQo, AJo, KQo, ATs, KJs, QJs) do not flat.
             if (potLevel >= 3 && !pair && ((!suited && ((hi == 12 && lo in 9..10) || (hi == 11 && lo == 10))) ||
                     (suited && ((hi == 12 && lo == 8) || (hi == 11 && lo == 9) || (hi == 10 && lo == 9))))) f *= DOMINATED_VS_FOUR_BET
+            // Facing a 4-bet: suited connectors T9s and below and middle pairs 66–99 (no set odds, no domination equity).
+            if (potLevel >= 3 && suited && !pair && hi <= 8 && hi - lo == 1) f *= DOMINATED_VS_FOUR_BET
+            if (potLevel >= 3 && pair && hi in 4..7) f *= DOMINATED_VS_FOUR_BET
         } else if (blindPosted > 0.0) {
             val gap = hi - lo
             if (!pair && !suited && hi < 12 && lo < 8 && (gap >= 3 || (hi <= 6 && gap >= 2))) f *= BLIND_TRASH

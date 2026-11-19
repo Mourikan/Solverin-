@@ -1,6 +1,7 @@
 package com.solverin.engine.flop
 
 import com.solverin.engine.core.Stake
+import com.solverin.engine.model.NitRead
 
 /**
  * Villain flop tendencies (population priors; all frequencies of villain's range at the node).
@@ -73,6 +74,8 @@ data class FlopNodeLock(
 data class FlopNodeLocks(val locks: Map<FlopVillainNode, FlopNodeLock> = emptyMap()) {
     operator fun get(node: FlopVillainNode): FlopNodeLock? = locks[node]
     fun with(node: FlopVillainNode, lock: FlopNodeLock) = FlopNodeLocks(locks + (node to lock))
+    /** NIT read (over-folder with a value-heavy range): PostflopMassiveExploitOverride is closed. */
+    val nitRead: Boolean get() = NitRead.of(locks.values.map { it.fold }, locks.values.map { it.valueShare })
 
     companion object {
         val NONE = FlopNodeLocks()

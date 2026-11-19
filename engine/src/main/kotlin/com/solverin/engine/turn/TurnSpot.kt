@@ -4,6 +4,7 @@ import com.solverin.engine.core.RakeStructure
 import com.solverin.engine.core.Stake
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.math.RakeAttribution
+import com.solverin.engine.model.NitRead
 
 /** How the flop was played before this turn. */
 enum class FlopLine { BET_CALL, CHECK_CHECK, RAISE_CALL, MULTIWAY_3WAY }
@@ -141,6 +142,8 @@ data class TurnNodeLock(
 data class TurnNodeLocks(val locks: Map<TurnVillainNode, TurnNodeLock> = emptyMap()) {
     operator fun get(n: TurnVillainNode): TurnNodeLock? = locks[n]
     fun with(n: TurnVillainNode, l: TurnNodeLock) = TurnNodeLocks(locks + (n to l))
+    /** NIT read (over-folder with a value-heavy range): PostflopMassiveExploitOverride is closed. */
+    val nitRead: Boolean get() = NitRead.of(locks.values.map { it.fold }, locks.values.map { it.valueShare })
 
     companion object {
         val NONE = TurnNodeLocks()
