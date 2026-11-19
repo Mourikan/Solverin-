@@ -568,7 +568,9 @@ class TurnMathEngine(
     }
 
     /** Hero calls a bet: [potBefore] includes the bet; flags draws calling below direct pot odds. */
-    fun call(h: Int, potBefore: Double, toCall: Double, betRange: FloatArray): TurnEvTerms {
+    fun call(h: Int, potBefore: Double, toCall: Double, bettorRange: FloatArray): TurnEvTerms {
+        // Hero's cards block every betting combo: price the call vs villain's whole range (no fake 0% equity).
+        val betRange = liveOr(h, bettorRange, villain)
         val c = minOf(toCall, stack)
         if (extraActsAfterHero && c > 0.0) return callSandwiched(h, potBefore, c, betRange)
         val br = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)

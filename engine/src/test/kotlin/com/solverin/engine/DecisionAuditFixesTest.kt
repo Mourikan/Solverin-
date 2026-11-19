@@ -125,11 +125,12 @@ class DecisionAuditFixesTest {
         // Floor: the dead hand (equity 0) keeps its fold; the live one is moved to a call.
         val w = FloatArray(4) { 1f }
         val fold = floatArrayOf(1f, 1f, 0f, 0f); val call = floatArrayOf(0f, 0f, 1f, 1f)
-        val eq = floatArrayOf(0f, 0.3f, 0.6f, 0.7f); val ev = doubleArrayOf(-50.0, -5.0, 3.0, 4.0)
+        val eq = floatArrayOf(0f, 0.3f, 0.6f, 0.7f); val ev = doubleArrayOf(-50.0, -1.0, 3.0, 4.0)
         val reached = MdfFloor.enforce(listOf(0, 1, 2, 3), w, 0.0, fold, call, 50.0, false, { eq[it] }) { ev[it] }
         assertEquals(1f, fold[0], 1e-6f, "dead hand never forced"); assertEquals(0f, fold[1], 1e-6f, "live hand defends")
         assertEquals(0.25, reached, 1e-9, "the reported fold ceiling is the one actually reached")
         assertTrue(MdfFloor.eligible(-1.2, 1.0, 0.1f, minBet = true) && !MdfFloor.eligible(-0.9, 1.0, 0.01f, minBet = true))
+        assertTrue(!MdfFloor.eligible(-6.6, 30.0, 0.1f, minBet = true), "never a destructive forced call")
     }
 
     // ---- C4: 3-way sandwich: a squeeze behind is answered (call the jam with a monster), never a forced give-up -------

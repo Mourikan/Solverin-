@@ -2,24 +2,25 @@ package com.solverin.engine.math
 
 /**
  * Strict MDF floor vs min-bets / weakness donks: folds above [maxFold] are turned into calls, best call EV first.
- * A hand whose call loses more than [MAX_LOSS_SHARE] of the amount to call and more than [SMALL_LOSS_BB] (no real
- * equity vs the betting range) is never forced in: defending the MDF protects against bluffs, it does not pay off value
- * with air.
+ * A hand without live equity, or whose call loses more than [MAX_FORCED_LOSS_BB] (or [MAX_LOSS_SHARE] of a non-min-bet
+ * call), is never forced in: defending the MDF protects against bluffs, it does not pay off value with air.
  */
 object MdfFloor {
     const val MAX_LOSS_SHARE = 0.5
-    /** Micro / min-bets: a call losing at most this much (bb) stays defendable (the floor's purpose vs 1 bb stabs). */
-    const val SMALL_LOSS_BB = 1.5
+    /** Largest loss (bb) a call forced by the floor may carry. */
+    const val MAX_FORCED_LOSS_BB = 1.5
 
     /** Equity below this vs the betting range is dead: never forced to call, whatever the bet size. */
     const val MIN_LIVE_EQUITY = 0.02f
 
     /**
-     * Min-bets: every hand with live equity defends (its loss is bounded by the small call). Other floors (weakness
-     * donks): the call must not lose more than max(MAX_LOSS_SHARE × call, SMALL_LOSS_BB).
+     * A hand is defended by the floor only with live equity and a bounded cost: min-bets accept a loss up to
+     * MAX_FORCED_LOSS_BB (the price of a micro stab), other floors (weakness donks) up to
+     * min(MAX_LOSS_SHARE × call, MAX_FORCED_LOSS_BB). Never a destructive forced call.
      */
     fun eligible(callEv: Double, toCall: Double, equity: Float, minBet: Boolean): Boolean =
-        callEv.isFinite() && equity >= MIN_LIVE_EQUITY && (minBet || callEv >= -maxOf(MAX_LOSS_SHARE * toCall, SMALL_LOSS_BB))
+        callEv.isFinite() && equity >= MIN_LIVE_EQUITY &&
+            callEv >= -(if (minBet) MAX_FORCED_LOSS_BB else minOf(MAX_LOSS_SHARE * toCall, MAX_FORCED_LOSS_BB))
 
     /** Applies the floor in place; returns the fold ceiling actually reached (≥ [maxFold] when hands were ineligible). */
     fun enforce(

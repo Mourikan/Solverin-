@@ -396,7 +396,9 @@ class FlopMathEngine(
         reraiseResponse(h, potAfterHero, x, vInv, a, raiseRange, level).value
 
     /** Hero calls a bet: [potBefore] includes the bet, [toCall] = chips hero adds. */
-    fun call(h: Int, potBefore: Double, toCall: Double, betRange: FloatArray): FlopEvTerms {
+    fun call(h: Int, potBefore: Double, toCall: Double, bettorRange: FloatArray): FlopEvTerms {
+        // Hero's cards block every betting combo: price the call vs villain's whole range (no fake 0% equity).
+        val betRange = liveOr(h, bettorRange, villain)
         val c = minOf(toCall, stack)
         if (extraActsAfterHero && c > 0.0) return callSandwiched(h, potBefore, c, betRange)
         val br = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
