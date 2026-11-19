@@ -413,7 +413,10 @@ class TurnMathEngine(
             val potAll = pot + behind * (1 + opponents)
             val inv = invest + behind
             val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, potAll, 0.0, e.toDouble())
-            return Branch(e * potAll - inv - rk, e, 1f, potAll, inv, rk, 0.0, 0.0, true)
+            val commit = e * potAll - inv - rk
+            // Hero only called with chips behind: he is not obliged to stack off later, so the call never loses more than [invest].
+            if (!aggressor && behind > 0.0 && commit < -invest) return Branch(-invest, e, 0f, pot, invest, 0.0, 0.0, 0.0, false)
+            return Branch(commit, e, 1f, potAll, inv, rk, 0.0, 0.0, true)
         }
         var r = realization(h, o, aggressor, behind, pot)
         if (braked(h, main)) r *= 1 - p.brakeRealizationK * villainMadeShare(main)

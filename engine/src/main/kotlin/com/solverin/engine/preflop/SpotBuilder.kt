@@ -167,8 +167,11 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 val sq = sz.squeeze(v, 1)
                 val z = sz.fourBet(sq)
                 val pot = sq + z + o + blinds - h.blindBb - v.blindBb - c.blindBb
-                val call = CallNode(pot, sq, z, listOf(vm.openerVsSqueeze(v).raise), h.isInPositionVs(v), 0.0, 3)
-                val opp = Opponent(v, vm.fourBettorVsJamAfterSqueeze(v), z, stack, null, stack, h.isInPositionVs(v))
+                val raw = vm.openerVsSqueeze(v).raise
+                val fourBetRange = if (polarized(VillainNode.VS_SQUEEZE_OPENER, v, h)) raw else collapseFourBet(raw, FOUR_BET_TOP)
+                val call = CallNode(pot, sq, z, listOf(fourBetRange), h.isInPositionVs(v), 0.0, 3)
+                val jamResponse = if (fourBetRange === raw) vm.fourBettorVsJamAfterSqueeze(v) else vm.fourBettorVsJamAfterSqueeze(v, fourBetRange)
+                val opp = Opponent(v, jamResponse, z, stack, null, stack, h.isInPositionVs(v))
                 SpotNodes(call, RaiseNode(pot, sq, stack, listOf(opp), 4))
             } else {
                 val y = sz.threeBet(v, h)

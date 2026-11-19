@@ -37,6 +37,9 @@ class ImpliedOdds(ranking: HandRanking) {
             else (1.0 - (pct - PAYER_FRACTION) / (PAYS_FLOOR_AT - PAYER_FRACTION) * 0.9).coerceIn(0.1, 1.0).toFloat()
             acc += HandClass.combos(v)
         }
+        // Underpairs (22 up to SET_MINE_TOP_RANK) play the same set-or-fold line: a higher one never pays off more than a
+        // lower one, so reverse implied odds stay monotone and 44 never earns less than 33.
+        for (r in 1..SET_MINE_TOP_RANK) pays[PAIR_BY_RANK[r]] = minOf(pays[PAIR_BY_RANK[r]], pays[PAIR_BY_RANK[r - 1]])
     }
 
     fun payoff(h: Int, villain: FloatArray): Double {
@@ -92,20 +95,7 @@ class ImpliedOdds(ranking: HandRanking) {
         return d * (raw(h, villain, potTotal, behind, inPosition) - mean(villain, potTotal, behind, inPosition))
     }
 
-    /**
-     * Set-mining pairs (22 up to [SET_MINE_TOP_RANK]) are monotone: a higher small pair can always play exactly like a
-     * lower one (set-mine and give up), so its implied term is never below any lower small pair's (otherwise 33
-     * out-earns 44 through 44's larger reverse odds). Higher pairs keep their own term (they play as overpairs, not set-miners).
-     */
     fun raw(h: Int, villain: FloatArray, potTotal: Double, behind: Double, inPosition: Boolean): Double {
-        val own = single(h, villain, potTotal, behind, inPosition)
-        if (!HandClass.isPair(h) || HandClass.highRank(h) > SET_MINE_TOP_RANK) return own
-        var best = own
-        for (r in 0 until HandClass.highRank(h)) best = maxOf(best, single(PAIR_BY_RANK[r], villain, potTotal, behind, inPosition))
-        return best
-    }
-
-    private fun single(h: Int, villain: FloatArray, potTotal: Double, behind: Double, inPosition: Boolean): Double {
         if (behind <= 0.0) return 0.0
         val ext = minOf(behind, potTotal * if (inPosition) EXTRACT_IP else EXTRACT_OOP)
         val rev = minOf(behind, potTotal * if (inPosition) REVERSE_IP else REVERSE_OOP)
@@ -119,8 +109,8 @@ class ImpliedOdds(ranking: HandRanking) {
         private val PAIR_BY_RANK = IntArray(13).also { p ->
             for (h in 0 until HandClass.COUNT) if (HandClass.isPair(h)) p[HandClass.highRank(h)] = h
         }
-        /** Highest set-mining pair rank (4 = 66). */
-        const val SET_MINE_TOP_RANK = 4
+        /** Highest set-or-fold underpair rank (7 = 99). */
+        const val SET_MINE_TOP_RANK = 7
         const val PAYER_FRACTION = 0.06
         const val PAYS_FLOOR_AT = 0.30
         const val EXTRACT_IP = 1.5

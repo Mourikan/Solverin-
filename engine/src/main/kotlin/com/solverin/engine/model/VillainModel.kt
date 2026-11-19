@@ -104,6 +104,12 @@ class VillainModel(
         Partition.split(openerVsSqueeze(o).raise, 0.0, c, 1.0, ranking)
     }
 
+    /** The squeezed opener's answer to a jam when hero models his 4-bet range as [fourBetRange]. */
+    fun fourBettorVsJamAfterSqueeze(o: Position, fourBetRange: FloatArray): Partition {
+        val c = lock(VillainNode.VS_JAM, o, null)?.call ?: (1 - profile.foldTo5Bet)
+        return Partition.split(fourBetRange, 0.0, c, 1.0, ranking)
+    }
+
     /** Player [p] not yet in, facing an open from [o] and a 3bet: cold 4bet / cold call / fold. */
     fun coldVs3Bet(p: Position, o: Position): Partition = m("c3b$p$o") {
         val l = lock(VillainNode.COLD_VS_3BET, p, o)
