@@ -873,4 +873,102 @@ class SolverViewModelTest {
         assertOracle(s)
         assertLive(s)
     }
+
+    // ---- UI v3.2: villain archetype auto-reset, implicit EV vs amount to put in --------------------------------------
+
+    @Test
+    fun newHandResetsVillainProfileToPopulation() = runTest(dispatcher) {
+        val vm = vm()
+        assertEquals(VillainProfilePreset.POPULATION, vm.state.value.profile)
+        vm.setProfile(VillainProfilePreset.MANIAC); advanceUntilIdle()
+        assertEquals(VillainProfilePreset.MANIAC, vm.state.value.profile)
+        pickCards(vm, "Ah", "Ks")
+        vm.setHeroPosition(Position.CO); advanceUntilIdle()
+        assertEquals(VillainProfilePreset.MANIAC, vm.state.value.profile)
+        vm.resetHand(); advanceUntilIdle()
+        var s = vm.state.value
+        assertEquals(VillainProfilePreset.POPULATION, s.profile)
+        assertEquals(StreetFlowPhase.PICK_HERO_CARDS, s.phase)
+        // The new hand is solved with the population read (no node lock left over).
+        pickCards(vm, "Ah", "Ks")
+        vm.setHeroPosition(Position.CO); advanceUntilIdle()
+        s = vm.state.value
+        assertEquals(VillainProfilePreset.POPULATION, s.profile)
+        assertOracle(s)
+        val fresh = vm()
+        pickCards(fresh, "Ah", "Ks")
+        fresh.setHeroPosition(Position.CO); advanceUntilIdle()
+        assertEquals(fresh.state.value.options.map { it.key to it.evBb }, s.options.map { it.key to it.evBb })
+    }
+
+    @Test
+    fun villainProfileCanChangeFreelyDuringTheHandAndReSolvesInPlace() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ah", "Kd")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()
+        if (vm.state.value.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        pickCards(vm, "Kh", "8c", "4d")
+        vm.villain("Check"); advanceUntilIdle()
+        val base = vm.state.value
+        assertOracle(base)
+        assertNotNull(base.heroCommittedKey)
+        val history = base.history
+        val evs = HashMap<VillainProfilePreset, List<Double>>()
+        for (p in listOf(VillainProfilePreset.STATION, VillainProfilePreset.NIT, VillainProfilePreset.MANIAC, VillainProfilePreset.POPULATION)) {
+            vm.setProfile(p); advanceUntilIdle()
+            val s = vm.state.value
+            assertEquals(p, s.profile)
+            assertNull(s.error)
+            assertOracle(s)
+            // Same node, same hand flow: only the solved numbers (and hero's re-assumed action / sizing) change.
+            assertEquals(TableStreet.FLOP, s.street)
+            assertEquals(history.dropLast(1), s.history.dropLast(1))
+            assertTrue(s.history.last(), s.history.last().startsWith("F BTN★"))
+            assertNotNull(s.heroCommittedKey)
+            assertTrue(s.heroOverridable)
+            evs[p] = s.options.map { it.evBb }
+        }
+        assertTrue("a locked read changes the solved EVs", evs.values.distinct().size > 1)
+        assertEquals(base.options.map { it.evBb }, evs.getValue(VillainProfilePreset.POPULATION))
+        // The hand keeps flowing after the changes.
+        vm.setProfile(VillainProfilePreset.STATION); advanceUntilIdle()
+        val s = vm.state.value
+        if (s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) {
+            val o = s.villainOptions.firstOrNull { it.kind == ActKind.CALL } ?: s.villainOptions.first { it.kind == ActKind.CHECK }
+            vm.villainAct(o); advanceUntilIdle()
+        }
+        assertNull(vm.state.value.error)
+        assertEquals(VillainProfilePreset.STATION, vm.state.value.profile)
+        assertTrue(vm.state.value.phase == StreetFlowPhase.DEAL_BOARD_CARDS || vm.state.value.phase == StreetFlowPhase.HAND_COMPLETE)
+    }
+
+    @Test
+    fun bannerStateSeparatesAmountToPutInFromImplicitEv() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Qs", "Qd")
+        vm.setHeroPosition(Position.BB); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        val s = vm.state.value
+        val best = s.maxEvAction!!
+        // Amount to bet / pay (dominant badge) and implicit EV (small label) are distinct fields of the banner state.
+        assertEquals(best.amountBb, s.recommendedAmountBb, 1e-12)
+        assertEquals(best.evBb, s.recommendedImplicitEvBb, 1e-12)
+        assertTrue(best.kind != ActKind.FOLD && best.amountBb > 0.0)
+        assertTrue("QQ vs an open: amount ${best.amountBb} vs EV ${best.evBb}", kotlin.math.abs(best.amountBb - best.evBb) > 1e-6)
+        for (o in s.options) {
+            assertTrue(o.implicitEvLabel, o.implicitEvLabel.startsWith("EV impl: "))
+            assertTrue(o.implicitEvLabel.endsWith("bb"))
+            assertFalse("never shown as BB", o.implicitEvLabel.contains("BB"))
+            assertEquals(ActionOption.implicitEvLabel(o.evBb), o.implicitEvLabel)
+        }
+        assertEquals("EV impl: +1.25bb", ActionOption.implicitEvLabel(1.25))
+        assertEquals("EV impl: -0.40bb", ActionOption.implicitEvLabel(-0.4))
+        assertEquals("EV impl: —", ActionOption.implicitEvLabel(Double.NaN))
+        // Before any node: no implicit EV.
+        assertTrue(vm().state.value.recommendedImplicitEvBb.isNaN())
+    }
 }

@@ -126,8 +126,10 @@ class SolverViewModel(
         }
     }
 
+    /** New hand: fresh table and the villain read back to POBLACIÓN (no node lock) until the user sets one. */
     fun resetHand() {
         cancelCompute()
+        profile = VillainProfilePreset.POPULATION
         flow = StreetFlowStateMachine.newHand(tableStack)
         undoStack.clear(); heroSnapshot = null; committedKey = null; result = null; pickerRank = null; error = null; selectedSeat = null
         matrixSeat = null; autoAdvance = false; heroChain = false
@@ -518,6 +520,7 @@ class SolverViewModel(
             heroCommittedBb = hero?.let { s.seat(it).streetInvest } ?: 0.0,
             recommendedAmountBb = optionViews.firstOrNull { it.isMaxEv }?.amountBb ?: 0.0,
             recommendedPotPct = optionViews.firstOrNull { it.isMaxEv }?.potPct ?: 0.0,
+            recommendedImplicitEvBb = optionViews.firstOrNull { it.isMaxEv }?.evBb ?: Double.NaN,
             oraclePreview = r != null && committedKey == null,
             nodeLabel = r?.nodeLabel.orEmpty(),
             approximate = r?.approximate ?: false,

@@ -106,8 +106,9 @@ private fun MaxEvCard(state: HandViewState, o: ActionOption, onHold: (Boolean) -
         Column(Modifier.weight(1f)) {
             Text(o.shortName, color = CakeColors.Ink, fontWeight = FontWeight.Black, fontSize = actionFontSize(o.shortName),
                 maxLines = 1, softWrap = false, overflow = TextOverflow.Clip)
-            Text("${signedBb(o.evBb)} · Nash: ${pct(o.frequency)}", color = CakeColors.Ink, fontWeight = FontWeight.Bold, fontSize = 11.sp,
-                fontFamily = Mono, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            // Implicit EV (blinds won by the action) kept small and muted: the amount to put in is the badge on the right.
+            Text("${o.implicitEvLabel} · Nash ${pct(o.frequency)}", color = CakeColors.Ink.copy(alpha = 0.58f), fontWeight = FontWeight.Normal,
+                fontSize = 10.sp, fontFamily = Mono, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             val badge = when {
                 state.heroFoldPending -> "✓ FOLD ASUMIDO · introduce otra acción para seguir"
                 state.manualDeviation -> "⚠ DESVÍO MANUAL ACTIVO: ${state.committedAction?.shortName ?: ""} (${signedBb(state.committedAction?.deltaEvBb ?: 0.0)})"
@@ -167,8 +168,8 @@ private fun OptionChip(o: ActionOption, selected: Boolean, enabled: Boolean, onC
     ) {
         Column(Modifier.weight(1f)) {
             Text(o.shortName, color = c, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip)
-            Text("${pct(o.frequency)} · ${signedBb(o.evBb)}", color = CakeColors.TextSecondary, fontSize = 8.sp, fontFamily = Mono, maxLines = 1,
-                overflow = TextOverflow.Ellipsis)
+            Text("${pct(o.frequency)} · ${o.implicitEvLabel}", color = CakeColors.TextSecondary.copy(alpha = 0.8f), fontWeight = FontWeight.Normal,
+                fontSize = 8.sp, fontFamily = Mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Text("${amount(o.amountBb)}bb", color = CakeColors.TextPrimary, fontSize = 10.sp, fontFamily = Mono, fontWeight = FontWeight.Black,
             maxLines = 1, softWrap = false, modifier = Modifier.wrapContentWidth())
@@ -202,7 +203,8 @@ fun DeviationOverlay(state: HandViewState, onPick: (String) -> Unit, modifier: M
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(1.dp)) {
                             Text(o.shortName, color = CakeColors.Ink, fontWeight = FontWeight.Black, fontSize = 11.sp, maxLines = 1, softWrap = false)
                             HeroBetAmountBadge(o, compact = true)
-                            Text("${signedBb(o.evBb)} · ${pct(o.frequency)}", color = CakeColors.Ink, fontSize = 8.sp, fontFamily = Mono, maxLines = 1)
+                            Text("${o.implicitEvLabel} · ${pct(o.frequency)}", color = CakeColors.Ink.copy(alpha = 0.6f), fontWeight = FontWeight.Normal,
+                                fontSize = 8.sp, fontFamily = Mono, maxLines = 1)
                             Text("Δ ${signedBb(o.deltaEvBb)}", color = CakeColors.Ink, fontWeight = FontWeight.Bold, fontSize = 8.sp, fontFamily = Mono, maxLines = 1)
                         }
                     }

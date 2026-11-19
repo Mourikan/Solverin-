@@ -23,7 +23,18 @@ data class ActionOption(
     val amountBb: Double = 0.0,
     /** Bet / raise size as a fraction of the pot before it (0 for passive actions). */
     val potPct: Double = 0.0,
-)
+) {
+    /**
+     * Blinds won implicitly by taking this action (its EV), labelled so it is never read as chips to put in the pot
+     * ([amountBb] is the amount to bet / pay).
+     */
+    val implicitEvLabel: String get() = implicitEvLabel(evBb)
+
+    companion object {
+        fun implicitEvLabel(evBb: Double): String =
+            "EV impl: " + if (evBb.isFinite()) String.format(java.util.Locale.US, "%+.2fbb", evBb) else "—"
+    }
+}
 
 /** One seat of the hand (strip chips and preflop matrix cards). */
 @Immutable
@@ -81,6 +92,8 @@ data class HandViewState(
     /** Explicit bb amount of the Max-EV action (see [ActionOption.amountBb]); never empty. */
     val recommendedAmountBb: Double = 0.0,
     val recommendedPotPct: Double = 0.0,
+    /** EV (bb) of the recommended action: blinds won implicitly, shown small next to the dominant [recommendedAmountBb]. */
+    val recommendedImplicitEvBb: Double = Double.NaN,
     /** Oracle shows hero's NEXT node (hero has not acted yet on it): its bet is not yet in front of the villains. */
     val oraclePreview: Boolean = false,
     /** Oracle options of hero's current / last decision node (Nash frequency + exact EV in bb). */
