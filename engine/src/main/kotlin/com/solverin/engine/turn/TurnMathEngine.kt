@@ -1,5 +1,6 @@
 package com.solverin.engine.turn
 
+import com.solverin.engine.math.IdentityMemo
 import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.flop.BoardStrength
 import com.solverin.engine.flop.ComboPartition
@@ -12,7 +13,6 @@ import com.solverin.engine.flop.FlopProfile
 import com.solverin.engine.flop.FlopVillainModel
 import com.solverin.engine.flop.FlopVillainNode
 import com.solverin.engine.math.RakeModel
-import java.util.IdentityHashMap
 
 /**
  * Master turn EV equation — single judge (per hero combo, exact card removal, exact 46-card river projection):
@@ -62,11 +62,11 @@ class TurnMathEngine(
         require(s.extra == null || extraEquity != null) { "3-way spot needs an extra equity provider" }
     }
 
-    private val eqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
-    private val extraEqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
+    private val eqCache = IdentityMemo<FlopEquity.Result>()
+    private val extraEqCache = IdentityMemo<FlopEquity.Result>()
 
-    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.heroVs(range) }
-    fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.getOrPut(range) { extraEquity!!.heroVs(range) }
+    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.get(range) { equity.heroVs(range) }
+    fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.get(range) { extraEquity!!.heroVs(range) }
     fun outsVs(range: FloatArray): TurnRiverProjectionEngine.Projection = equity.outs(range, riverContinueFraction)
     private fun outsVsExtra(range: FloatArray): TurnRiverProjectionEngine.Projection = extraEquity!!.outs(range, riverContinueFraction)
 
@@ -344,10 +344,10 @@ class TurnMathEngine(
 
     private val brakeTexture: Boolean = threeFlushSuit >= 0 || impact.has(TurnCardCategory.STRAIGHT_COMPLETING)
 
-    private val madeShareCache = IdentityHashMap<FloatArray, Double>()
+    private val madeShareCache = IdentityMemo<Double>()
 
     /** Share of [range] holding a made straight or better (flushes included) on the turn board. */
-    fun villainMadeShare(range: FloatArray): Double = madeShareCache.getOrPut(range) {
+    fun villainMadeShare(range: FloatArray): Double = madeShareCache.get(range) {
         var t = 0.0; var m = 0.0
         for (k in range.indices) { val w = range[k]; if (w <= 0f || strength.strength[k] < 0) continue; t += w; if (strength.category[k] >= 4) m += w }
         if (t > 0) m / t else 0.0
@@ -480,7 +480,7 @@ class TurnMathEngine(
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
         val v = leveraged(h, resp.probabilities(h), level, potBefore + a + (x - vInv), stack - x)
-        val w = leveraged(h, extraResp.probabilities(h), level, potBefore + a + (x - xInv), stack - x)
+        val w = leveraged(h, extraResp.probabilitiesLive(h), level, potBefore + a + (x - xInv), stack - x)
         val fv = v[0]; var cv = v[1]; var rv = v[2]
         val fx = w[0]; var cx = w[1]; var rx = w[2]
         if (x >= stack) { cv += rv; rv = 0.0; cx += rx; rx = 0.0 }
@@ -587,7 +587,7 @@ class TurnMathEngine(
     /** Sandwich: the third player behind folds (heads-up), calls (3-way) or squeezes (hero gives up the call). */
     private fun callSandwiched(h: Int, potBefore: Double, c: Double, betRange: FloatArray): TurnEvTerms {
         val xResp = extraModel!!.respondToBet(extraNodeRange!!, potBefore, c)
-        val xr = xResp.probabilities(h)
+        val xr = xResp.probabilitiesLive(h)
         val hu = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
         // Drawing dead vs the bettor (who stays in every branch): no continuation wins anything, the call is lost.
         if (hu.equity < MdfFloor.MIN_LIVE_EQUITY) return deadSandwich(hu, c)

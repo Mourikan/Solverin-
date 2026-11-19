@@ -19,10 +19,10 @@ class FlopVillainModel(
     /** Bets below this pot fraction are min-bets (fold capped at profile.microBetMaxFold). */
     private val microBetRatio: Double = 0.2,
 ) {
-    private val memo = java.util.IdentityHashMap<FloatArray, HashMap<Pair<Int, Double>, ComboPartition>>()
+    private val memo = com.solverin.engine.math.IdentityMemo<com.solverin.engine.math.KeyMemo<Pair<Int, Double>, ComboPartition>>()
 
     private fun memo(tag: Int, range: FloatArray, a: Double, f: () -> ComboPartition): ComboPartition =
-        memo.getOrPut(range) { HashMap() }.getOrPut(tag to a) { f() }
+        memo.get(range) { com.solverin.engine.math.KeyMemo() }.get(tag to a, f)
 
     fun mdf(potBefore: Double, bet: Double): Double = if (potBefore + bet <= 0) 0.0 else potBefore / (potBefore + bet)
 

@@ -23,14 +23,37 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
         if (all >= SHRINK_COMBOS) return doubleArrayOf(f / all, c / all, r / all)
         val total = foldTotal + callTotal + raiseTotal
         if (total <= EMPTY_MASS) return if (all > EMPTY_MASS) doubleArrayOf(f / all, c / all, r / all) else doubleArrayOf(0.0, 1.0, 0.0)
+        // A response whose combos hero blocks completely is physically impossible: it gets no unconditional share.
+        val fu = if (f > BLOCKED_MASS) foldTotal else 0.0
+        val cu = if (c > BLOCKED_MASS) callTotal else 0.0
+        val ru = if (r > BLOCKED_MASS) raiseTotal else 0.0
+        val tu = fu + cu + ru
+        if (tu <= EMPTY_MASS) return doubleArrayOf(foldTotal / total, callTotal / total, raiseTotal / total)
         val k = SHRINK_COMBOS - all
         val n = all + k
-        return doubleArrayOf((f + k * foldTotal / total) / n, (c + k * callTotal / total) / n, (r + k * raiseTotal / total) / n)
+        return doubleArrayOf((f + k * fu / tu) / n, (c + k * cu / tu) / n, (r + k * ru / tu) / n)
+    }
+
+    /**
+     * Third player's answer (multiway): a raise / squeeze is impossible when hero's cards leave no live raising combo,
+     * and a player whose whole range is blocked holds nothing and folds.
+     */
+    fun probabilitiesLive(h: Int): DoubleArray {
+        val f = Combos.remaining(h, fold, foldTotal)
+        val c = Combos.remaining(h, call, callTotal)
+        val r = Combos.remaining(h, raise, raiseTotal)
+        if (f + c + r <= BLOCKED_MASS) return doubleArrayOf(1.0, 0.0, 0.0)
+        val p = probabilities(h)
+        if (r > BLOCKED_MASS) return p
+        val keep = p[0] + p[1]
+        return if (keep > 0.0) doubleArrayOf(p[0] / keep, p[1] / keep, 0.0) else doubleArrayOf(1.0, 0.0, 0.0)
     }
 
     companion object {
         /** Below this mass (combos) a range is treated as empty. */
         const val EMPTY_MASS = 1e-9
+        /** Live mass (combos) at or below which a response is blocked by hero's cards (impossible). */
+        const val BLOCKED_MASS = 1e-4
         /** Live combos under which the card-removal split is shrunk toward the unconditional one. */
         const val SHRINK_COMBOS = 1.0
 

@@ -15,6 +15,7 @@ import com.solverin.engine.model.NodeLock
 import com.solverin.engine.model.NodeLocks
 import com.solverin.engine.model.VillainNode
 import com.solverin.engine.pipeline.HandPipelineEngine
+import com.solverin.engine.pipeline.HandResult
 import com.solverin.engine.pipeline.HandScript
 import com.solverin.engine.pipeline.PreflopAction
 import com.solverin.engine.pipeline.PreflopLine
@@ -260,5 +261,51 @@ class DecisionAuditFixesTest {
                 }
             }
         }
+    }
+
+    // ---- Closing: impossible squeezes and thread safety ------------------------------------------------------------------
+
+    @Test fun fullyBlockedSqueezeIsImpossible() {
+        val raise = FloatArray(Combos.COUNT).also { it[Combos.parse("AsKs")] = 1f; it[Combos.parse("AcKc")] = 1f }
+        val call = FloatArray(Combos.COUNT).also { it[Combos.parse("QdQc")] = 1f }
+        val fold = FloatArray(Combos.COUNT).also { it[Combos.parse("7d6d")] = 1f }
+        val p = ComboPartition(raise, call, fold)
+        // Hero's A♠A♣ blocks every raising combo: no squeeze, the remaining answers renormalized.
+        val live = p.probabilitiesLive(Combos.parse("AsAc"))
+        assertEquals(0.0, live[2], 0.0); assertEquals(1.0, live[0] + live[1], 1e-9)
+        val none = ComboPartition(raise, FloatArray(Combos.COUNT), FloatArray(Combos.COUNT)).probabilitiesLive(Combos.parse("AsAc"))
+        assertEquals(listOf(1.0, 0.0, 0.0), none.toList(), "a fully blocked third player holds nothing")
+        // Turn quads 3-way (hero blocks the third player's aces): never folded.
+        val s = HandScript(Stake.NL10, PreflopAction(PreflopLine.RFI_COLD_CALL_BB_CALL, Position.UTG, Position.SB), Seat.OPENER, "AhAd", "KsKdAs", "Ac", "8c",
+            StreetScript(StreetKind.MULTIWAY_BET_CALL, Seat.OPENER), StreetScript(StreetKind.MULTIWAY_BET_CALL, Seat.THIRD), RiverScript(1.0), stackBb = 150.0)
+        val t = pipeline.play(s).report(Street.TURN)?.turn
+        if (t != null && TurnAction.FOLD in t.actions) {
+            val aa = Combos.parse("AhAd")
+            assertTrue(t.frequency(TurnAction.FOLD, aa) < 0.5f, "quads never fold 3-way")
+            assertTrue(t.terms(TurnAction.CALL, aa)!!.ev > 0.0, "quads call is +EV")
+        }
+    }
+
+    @Test fun parallelSolvesMatchSequentialSolves() {
+        val scripts = listOf(
+            HandScript(Stake.NL10, PreflopAction(PreflopLine.RFI_COLD_CALL_BB_CALL, Position.CO, Position.SB), Seat.RESPONDER, "5d3d", "JdJh4s", "8c", "3c",
+                StreetScript(StreetKind.MULTIWAY_BET_CALL, Seat.OPENER), StreetScript(StreetKind.MULTIWAY_BET_CALL, Seat.OPENER), RiverScript(0.25)),
+            HandScript(Stake.NL100, PreflopAction(PreflopLine.RFI_CALL, Position.CO, Position.BTN), Seat.RESPONDER, "Tc3c", "QsKcAh", "8s", "4h",
+                StreetScript(StreetKind.RAISE_CALL, Seat.RESPONDER), StreetScript(StreetKind.BET_CALL, Seat.OPENER), RiverScript(0.75), stackBb = 40.0),
+            HandScript(Stake.NL50, PreflopAction(PreflopLine.THREE_BET_CALL, Position.CO, Position.SB), Seat.RESPONDER, "KcJc", "Qs2h7d", "Ah", "3c",
+                StreetScript(StreetKind.BET_CALL, Seat.OPENER), StreetScript(StreetKind.BET_CALL, Seat.OPENER), RiverScript(0.5)),
+        )
+        fun signature(r: HandResult): String = r.reports.joinToString("|") { rep ->
+            rep.street.name + rep.heroMix.entries.sortedBy { it.key }.joinToString { "${it.key}=%.6f".format(it.value) } +
+                rep.heroEv.entries.sortedBy { it.key }.joinToString { "${it.key}=%.6f".format(it.value) }
+        }
+        val sequential = scripts.map { signature(pipeline.play(it)) }
+        // One shared engine, many threads, interleaved: identical answers.
+        val shared = HandPipelineEngine(PreflopEngine())
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val futures = (0 until 12).map { i -> pool.submit<String> { signature(shared.play(scripts[i % scripts.size])) } }
+            futures.forEachIndexed { i, f -> assertEquals(sequential[i % scripts.size], f.get(), "parallel solve #$i") }
+        } finally { pool.shutdown() }
     }
 }

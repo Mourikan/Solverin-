@@ -1,11 +1,12 @@
 package com.solverin.engine.river
 
+import com.solverin.engine.math.KeyMemo
+import com.solverin.engine.math.IdentityMemo
 import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.Draws
 import com.solverin.engine.math.PipelineBufferPool
 import com.solverin.engine.math.RakeModel
-import java.util.IdentityHashMap
 
 /**
  * Terminal river master equation (per hero combo and size s, exact card removal, R_river = 1, no implied / RIO):
@@ -87,7 +88,7 @@ class RiverMathEngine(
         val checkIdx: IntArray = (0 until Combos.COUNT).filter { check[it] > 0f }.toIntArray()
     }
 
-    private val partitionCache = HashMap<Pair<Int, Double>, BetPartition>()
+    private val partitionCache = KeyMemo<Pair<Int, Double>, BetPartition>()
 
     private fun fill(rem: FloatArray, dst: FloatArray, budget: Double, order: List<Int>) {
         var left = budget
@@ -133,7 +134,7 @@ class RiverMathEngine(
     private val villainOrder: List<Int> = s.showdown.order(villain).toList()
 
     /** Villain's first action with a bet of [size] (pot fractions). */
-    fun villainBets(size: Double): BetPartition = partitionCache.getOrPut(0 to Math.round(size * 1e6) / 1e6) {
+    fun villainBets(size: Double): BetPartition = partitionCache.get(0 to Math.round(size * 1e6) / 1e6) {
         val rem = villain.copyOf()
         val bet = FloatArray(Combos.COUNT); val value = FloatArray(Combos.COUNT); val bluff = FloatArray(Combos.COUNT)
         val total = Combos.total(villain)
@@ -165,8 +166,8 @@ class RiverMathEngine(
 
     // ---- blockers -------------------------------------------------------------------------------------------
 
-    private val blockerCache = IdentityHashMap<FloatArray, RiverBlockerEngine>()
-    fun blockers(range: FloatArray, extraPlayer: Boolean = false): RiverBlockerEngine = blockerCache.getOrPut(range) {
+    private val blockerCache = IdentityMemo<RiverBlockerEngine>()
+    fun blockers(range: FloatArray, extraPlayer: Boolean = false): RiverBlockerEngine = blockerCache.get(range) {
         RiverBlockerEngine(range, if (extraPlayer) s.extraVsHero!! else s.villainVsHero, p.blockerNutEquity, p.blockerFoldEquity)
     }
 

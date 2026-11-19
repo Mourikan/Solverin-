@@ -1,8 +1,8 @@
 package com.solverin.engine.flop
 
+import com.solverin.engine.math.IdentityMemo
 import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.math.RakeModel
-import java.util.IdentityHashMap
 
 /**
  * Master flop EV equation (per hero combo, card-removal exact):
@@ -63,11 +63,11 @@ class FlopMathEngine(
     val outs get() = s.outs
     val backdoor get() = s.backdoor
 
-    private val eqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
-    private val payoffCache = IdentityHashMap<FloatArray, Double>()
-    private val drawCache = IdentityHashMap<FloatArray, Double>()
+    private val eqCache = IdentityMemo<FlopEquity.Result>()
+    private val payoffCache = IdentityMemo<Double>()
+    private val drawCache = IdentityMemo<Double>()
 
-    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.getOrPut(range) { equity.heroVs(range) }
+    fun eqVs(range: FloatArray): FlopEquity.Result = eqCache.get(range) { equity.heroVs(range) }
 
     val heroVsVillain: FlopEquity.Result = eqVs(villain)
     private val villainVsHero: FlopEquity.Result = equity.villainVs(hero)
@@ -120,13 +120,13 @@ class FlopMathEngine(
     // ---- third player (3-way pots) -------------------------------------------------------------------
 
     val extra: FloatArray? get() = s.extra
-    private val extraEqCache = IdentityHashMap<FloatArray, FlopEquity.Result>()
+    private val extraEqCache = IdentityMemo<FlopEquity.Result>()
 
     init {
         require(s.extra == null || extraEquity != null) { "3-way spot needs an extra equity provider" }
     }
 
-    fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.getOrPut(range) { extraEquity!!.heroVs(range) }
+    fun eqVsExtra(range: FloatArray): FlopEquity.Result = extraEqCache.get(range) { extraEquity!!.heroVs(range) }
 
     /** Third player's response model (never the preflop aggressor). */
     val extraModel: FlopVillainModel? = s.extra?.let { x ->
@@ -163,7 +163,7 @@ class FlopMathEngine(
     // ---- sub-functions -------------------------------------------------------------------------------
 
     /** Weighted share of [range] holding a strong draw (≥ 8 outs). */
-    fun drawDensity(range: FloatArray): Double = drawCache.getOrPut(range) {
+    fun drawDensity(range: FloatArray): Double = drawCache.get(range) {
         var t = 0.0; var d = 0.0
         for (k in range.indices) { val w = range[k]; if (w <= 0f) continue; t += w; if (outs[k] >= 8) d += w }
         if (t > 0) d / t else 0.0
@@ -191,7 +191,7 @@ class FlopMathEngine(
         return r + (1 - r) * low
     }
 
-    private fun payoff(range: FloatArray): Double = payoffCache.getOrPut(range) { strength.share(range, p.strongFraction) }
+    private fun payoff(range: FloatArray): Double = payoffCache.get(range) { strength.share(range, p.strongFraction) }
 
     fun implied(h: Int, range: FloatArray, pot: Double, behind: Double): Double {
         if (outs[h] == 0 || behind <= 0.0) return 0.0
@@ -313,7 +313,7 @@ class FlopMathEngine(
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
         val v = resp.probabilities(h)
-        val w = extraResp.probabilities(h)
+        val w = extraResp.probabilitiesLive(h)
         var fv = v[0]; var cv = v[1]; var rv = v[2]
         var fx = w[0]; var cx = w[1]; var rx = w[2]
         if (x >= stack) { cv += rv; rv = 0.0; cx += rx; rx = 0.0 }
@@ -416,7 +416,7 @@ class FlopMathEngine(
     private fun callSandwiched(h: Int, potBefore: Double, c: Double, betRange: FloatArray): FlopEvTerms {
         // The third player faces the bet (and hero's call): continue rate from his MDF at that price.
         val xResp = extraModel!!.respondToBet(extraNodeRange!!, potBefore, c)
-        val xr = xResp.probabilities(h)
+        val xr = xResp.probabilitiesLive(h)
         val hu = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
         // Drawing dead vs the bettor (who stays in every branch): no continuation wins anything, the call is lost.
         if (hu.equity < MdfFloor.MIN_LIVE_EQUITY) return deadSandwich(hu, c)

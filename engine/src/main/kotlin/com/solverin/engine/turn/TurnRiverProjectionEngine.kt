@@ -1,9 +1,10 @@
 package com.solverin.engine.turn
 
+import com.solverin.engine.math.KeyMemo
+import com.solverin.engine.math.IdentityMemo
 import com.solverin.engine.eval.HandEvaluator
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.math.PipelineBufferPool
-import java.util.IdentityHashMap
 
 /**
  * Exact river projection over the 46 unseen cards (52 − 4 board − 2 hole) for every hero combo.
@@ -34,7 +35,7 @@ class TurnRiverProjectionEngine(
     private val vTurn: IntArray
     internal val hMask: LongArray
     internal val vMask: LongArray
-    private val cache = IdentityHashMap<FloatArray, HashMap<Double, Projection>>()
+    private val cache = IdentityMemo<KeyMemo<Double, Projection>>()
 
     /** ΔNuts_river per river (hero share of > riverNutEquity combos − villain share), base ranges. */
     val riverNutDelta: DoubleArray
@@ -160,7 +161,7 @@ class TurnRiverProjectionEngine(
      */
     fun project(range: FloatArray, continueFraction: Double = 1.0): Projection {
         val cf = continueFraction.coerceIn(policy.minRiverContinue, 1.0)
-        return cache.getOrPut(range) { HashMap() }.getOrPut(cf) { compute(range, cf) }
+        return cache.get(range) { KeyMemo() }.get(cf) { compute(range, cf) }
     }
 
     private fun compute(range: FloatArray, continueFraction: Double): Projection {
