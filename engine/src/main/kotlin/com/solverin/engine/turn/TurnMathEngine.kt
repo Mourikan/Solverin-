@@ -238,9 +238,9 @@ class TurnMathEngine(
     /** True when the user locked villain's fold vs hero's turn bet (a read: bluff cap relaxes to 20×). */
     val responseFoldLocked: Boolean get() = ctx.locks[spot.villainResponseNode]?.fold != null
     val raiseFoldLocked: Boolean get() = ctx.locks[TurnVillainNode.VS_TURN_RAISE]?.fold != null
-    /** Locked calling station vs hero's bet: pure bluffs → 0, thin value expands. */
     /** NIT node-lock read: no PostflopMassiveExploitOverride. */
     val nit: Boolean get() = ctx.locks.nitRead
+    /** Locked calling station vs hero's bet: pure bluffs → 0, thin value expands. */
     val station: Boolean get() = ctx.locks[spot.villainResponseNode]?.fold?.let { it <= p.stationFold } ?: false
 
     val riverElasticity: Double = ctx.locks[TurnVillainNode.RIVER_ELASTICITY]?.frequency ?: prof.riverCallElasticity
