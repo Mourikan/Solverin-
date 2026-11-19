@@ -63,18 +63,24 @@ object TurnBluffCap {
         return capped
     }
 
-    /** Total aggressive-frequency cap (OOP check-raise): trims the smallest EV gains first. */
+    /**
+     * Total aggressive-frequency cap (OOP check-raise): trims the smallest EV gains first, bluffs and marginal raises
+     * before [protect] hands (value raises: ≥ 50% vs the continuing range or nuts), which are cut only if the cap binds.
+     */
     fun capTotal(
         heroIdx: List<Int>, weights: FloatArray, maxFrequency: Double,
         agg: FloatArray, passive: FloatArray, fold: FloatArray?, capped: BooleanArray,
         aggEv: (Int) -> Double, passiveEv: (Int) -> Double, foldAllowed: (Int) -> Boolean,
+        protect: (Int) -> Boolean = { false },
     ) {
         var total = 0.0; var raised = 0.0
         for (h in heroIdx) { total += weights[h]; raised += weights[h] * agg[h] }
         if (total <= 0.0 || raised <= maxFrequency * total) return
         var excess = raised - maxFrequency * total
         fun alt(h: Int) = maxOf(if (fold != null && foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY, passiveEv(h))
-        for (h in heroIdx.filter { agg[it] > 0f }.sortedBy { aggEv(it) - alt(it) }) {
+        val live = heroIdx.filter { agg[it] > 0f }.sortedBy { aggEv(it) - alt(it) }
+        // Bluffs / marginal raises are trimmed first; value raises only if the cap still binds.
+        for (h in live.filter { !protect(it) } + live.filter { protect(it) }) {
             if (excess <= 1e-12) break
             val cut = minOf(agg[h].toDouble() * weights[h], excess)
             val removed = minOf(agg[h], (cut / weights[h]).toFloat())

@@ -9,16 +9,31 @@ class ComboPartition(val raise: FloatArray, val call: FloatArray, val fold: Floa
     val callTotal: Double by lazy { Combos.total(call) }
     val foldTotal: Double by lazy { Combos.total(fold) }
 
-    /** Card-removal probabilities for hero combo [h]: (fold, call, raise). */
+    /**
+     * Card-removal probabilities for hero combo [h]: (fold, call, raise). Below [SHRINK_COMBOS] live combos the
+     * conditional split is shrunk toward the unconditional one (a pseudo-count of SHRINK_COMBOS): a range that hero's
+     * cards almost empty (e.g. only one raising combo left) must not answer with a certain raise / fold. An empty range
+     * answers with a call (never a free fold that would price a bluff on nothing).
+     */
     fun probabilities(h: Int): DoubleArray {
         val f = Combos.remaining(h, fold, foldTotal)
         val c = Combos.remaining(h, call, callTotal)
         val r = Combos.remaining(h, raise, raiseTotal)
         val all = f + c + r
-        return if (all <= 0.0) doubleArrayOf(1.0, 0.0, 0.0) else doubleArrayOf(f / all, c / all, r / all)
+        if (all >= SHRINK_COMBOS) return doubleArrayOf(f / all, c / all, r / all)
+        val total = foldTotal + callTotal + raiseTotal
+        if (total <= EMPTY_MASS) return if (all > EMPTY_MASS) doubleArrayOf(f / all, c / all, r / all) else doubleArrayOf(0.0, 1.0, 0.0)
+        val k = SHRINK_COMBOS - all
+        val n = all + k
+        return doubleArrayOf((f + k * foldTotal / total) / n, (c + k * callTotal / total) / n, (r + k * raiseTotal / total) / n)
     }
 
     companion object {
+        /** Below this mass (combos) a range is treated as empty. */
+        const val EMPTY_MASS = 1e-9
+        /** Live combos under which the card-removal split is shrunk toward the unconditional one. */
+        const val SHRINK_COMBOS = 1.0
+
         /** Max extra share of the range a proportional tier may extend beyond its budget. */
         const val TIER_SLACK = 0.10
 

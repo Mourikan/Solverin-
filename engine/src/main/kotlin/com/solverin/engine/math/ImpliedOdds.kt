@@ -92,7 +92,20 @@ class ImpliedOdds(ranking: HandRanking) {
         return d * (raw(h, villain, potTotal, behind, inPosition) - mean(villain, potTotal, behind, inPosition))
     }
 
+    /**
+     * Set-mining pairs (22 up to [SET_MINE_TOP_RANK]) are monotone: a higher small pair can always play exactly like a
+     * lower one (set-mine and give up), so its implied term is never below any lower small pair's (otherwise 33
+     * out-earns 44 through 44's larger reverse odds). Higher pairs keep their own term (they play as overpairs, not set-miners).
+     */
     fun raw(h: Int, villain: FloatArray, potTotal: Double, behind: Double, inPosition: Boolean): Double {
+        val own = single(h, villain, potTotal, behind, inPosition)
+        if (!HandClass.isPair(h) || HandClass.highRank(h) > SET_MINE_TOP_RANK) return own
+        var best = own
+        for (r in 0 until HandClass.highRank(h)) best = maxOf(best, single(PAIR_BY_RANK[r], villain, potTotal, behind, inPosition))
+        return best
+    }
+
+    private fun single(h: Int, villain: FloatArray, potTotal: Double, behind: Double, inPosition: Boolean): Double {
         if (behind <= 0.0) return 0.0
         val ext = minOf(behind, potTotal * if (inPosition) EXTRACT_IP else EXTRACT_OOP)
         val rev = minOf(behind, potTotal * if (inPosition) REVERSE_IP else REVERSE_OOP)
@@ -102,6 +115,12 @@ class ImpliedOdds(ranking: HandRanking) {
     }
 
     companion object {
+        /** Pair class of each rank (0 = 22 … 12 = AA). */
+        private val PAIR_BY_RANK = IntArray(13).also { p ->
+            for (h in 0 until HandClass.COUNT) if (HandClass.isPair(h)) p[HandClass.highRank(h)] = h
+        }
+        /** Highest set-mining pair rank (4 = 66). */
+        const val SET_MINE_TOP_RANK = 4
         const val PAYER_FRACTION = 0.06
         const val PAYS_FLOOR_AT = 0.30
         const val EXTRACT_IP = 1.5

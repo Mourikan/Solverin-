@@ -150,6 +150,20 @@ class HandPipelineEngine(
                 st.initiative = Seat.OPENER
             }
         }
+        // A seat whose solved node never takes the scripted action (e.g. the SB never flats vs an open: 3-bet or fold)
+        // is played with its whole continuing range at that node, never with a range fabricated from the full deck.
+        fun continuing(a: SpotAnalysis) = FloatArray(com.solverin.engine.core.HandClass.COUNT) { a.strategy.call(it) + a.strategy.raise(it) }
+        val fallback: Map<Seat, FloatArray> = when (pf.line) {
+            PreflopLine.RFI_CALL -> mapOf(Seat.RESPONDER to continuing(defend))
+            PreflopLine.THREE_BET_CALL -> mapOf(Seat.RESPONDER to continuing(defend))
+            PreflopLine.RFI_COLD_CALL_BB_CALL -> mapOf(Seat.RESPONDER to continuing(defend),
+                Seat.THIRD to continuing(solve(SpotKey.of(Scenario.SQUEEZE, Position.BB, pf.opener, pf.responder), Seat.THIRD)))
+            PreflopLine.ISO_RAISE_CALL -> emptyMap()
+        }
+        for ((seat, fb) in fallback) {
+            val w = weights.getValue(seat)
+            if (classMass(w) < MIN_LINE_COMBOS && classMass(fb) > classMass(w)) weights[seat] = fb
+        }
         val inHand = st.seats.map { c.pos(it) }.toSet()
         st.deadBb = Position.SB.blindBb.takeIf { Position.SB !in inHand }.orZero() + Position.BB.blindBb.takeIf { Position.BB !in inHand }.orZero()
         for (seat in st.seats) {
@@ -170,6 +184,13 @@ class HandPipelineEngine(
     }
 
     private fun Double?.orZero() = this ?: 0.0
+
+    private fun classMass(w: FloatArray): Double = (0 until com.solverin.engine.core.HandClass.COUNT).sumOf { w[it].toDouble() * com.solverin.engine.core.HandClass.combos(it) }
+
+    private companion object {
+        /** A preflop line range below this many combos is treated as absent from the solved strategy. */
+        const val MIN_LINE_COMBOS = 1.0
+    }
 
     /** Limped pot isolated by hero ([IsoRaiseInterceptor]): ranges and pot injected toward the flop. */
     private fun isoPreflop(c: Ctx, t0: Long) {

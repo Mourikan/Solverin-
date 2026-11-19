@@ -60,14 +60,18 @@ object BluffBudget {
     fun priorityThreshold(s: Scenario, policy: StakePolicy): Double =
         if (isFourBetNode(s)) policy.bluffExemptFourBetEvBb else Double.POSITIVE_INFINITY
 
-    /** Value raise test at node [s]. */
+    /**
+     * Value raise test at node [s]. QQ+ / AK are value re-raises at every node up to akValueMaxStackBb: their equity vs
+     * a tight continuing range (a nit's 4-bet / call range) can sit below 50% while the raise is still +EV value, and
+     * the bluff cap must never fold them.
+     */
     fun isValue(s: Scenario, hand: Int, valueEquity: Float, policy: StakePolicy, effectiveStackBb: Double): Boolean {
+        if (s != Scenario.RFI && effectiveStackBb <= policy.akValueMaxStackBb && hand in PREMIUM) return true
         if (!isFourBetNode(s)) return valueEquity >= 0.5f
-        if (effectiveStackBb <= policy.akValueMaxStackBb && hand in AK) return true
         return valueEquity >= policy.fourBetValueEquity
     }
 
-    private val AK = intArrayOf(HandClass.parse("AKs"), HandClass.parse("AKo"))
+    private val PREMIUM = intArrayOf(HandClass.parse("AA"), HandClass.parse("KK"), HandClass.parse("QQ"), HandClass.parse("AKs"), HandClass.parse("AKo"))
 
     /** Equilibrium-reference fold rate of the first opponent at each node. */
     fun referenceFold(s: Scenario): Double = when (s) {

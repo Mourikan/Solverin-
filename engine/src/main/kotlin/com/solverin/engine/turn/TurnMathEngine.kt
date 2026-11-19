@@ -423,6 +423,9 @@ class TurnMathEngine(
         var imp = implied(h, o, pot, behind)
         var rio = rio(h, o, pot, behind)
         if (opponents > 1) { imp *= MULTIWAY_DECAY; rio /= MULTIWAY_DECAY }
+        // Hero keeps the option to fold on the river: the continuation (EQ·R·Pot + implied − RIO) is never below 0,
+        // so a call never costs more than the chips it puts in (plus rake).
+        rio = minOf(rio, maxOf(0.0, eqR * pot + imp))
         return Branch(eqR * pot - invest - rk + imp - rio, e, r.toFloat(), pot, invest, rk, imp, rio, false)
     }
 
@@ -578,7 +581,9 @@ class TurnMathEngine(
         val mw = calledMulti(h, betRange, xResp.call, potBefore + 2 * c, c, stack - c, aggressor = false)
         val pc = xr[0] + xr[1]
         val calledEv = if (pc > 0) (xr[0] * hu.value + xr[1] * mw.value) / pc else 0.0
-        return terms(0.0, pc, xr[2], 0.0, hu, calledEv, -c, needsImplied(h, betRange, hu, c, potBefore))
+        // Squeeze behind: hero gives up the call, or (strong hands) calls the squeeze all-in vs the squeezer's range.
+        val evR = if (xr[2] > 0 && stack > 0.0) maxOf(-c, calledMulti(h, null, xResp.raise, potBefore + 2 * stack, stack, 0.0, aggressor = false).value) else -c
+        return terms(0.0, pc, xr[2], 0.0, hu, calledEv, evR, needsImplied(h, betRange, hu, c, potBefore))
     }
 
     fun raiseVsBet(h: Int, potBefore: Double, bet: Double, betRange: FloatArray): TurnEvTerms {

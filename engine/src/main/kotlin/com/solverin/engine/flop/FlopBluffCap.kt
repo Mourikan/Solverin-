@@ -73,13 +73,17 @@ object FlopBluffCap {
         heroIdx: List<Int>, weights: FloatArray, maxFrequency: Double,
         agg: FloatArray, passive: FloatArray, fold: FloatArray?, capped: BooleanArray,
         aggEv: (Int) -> Double, passiveEv: (Int) -> Double, foldAllowed: (Int) -> Boolean,
+        /** Value raises (≥ 50% vs the continuing range or nuts) are trimmed last, only if the cap still binds. */
+        protect: (Int) -> Boolean = { false },
     ) {
         var total = 0.0; var raised = 0.0
         for (h in heroIdx) { total += weights[h]; raised += weights[h] * agg[h] }
         if (total <= 0.0 || raised <= maxFrequency * total) return
         var excess = raised - maxFrequency * total
         fun alt(h: Int) = maxOf(if (fold != null && foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY, passiveEv(h))
-        val order = heroIdx.filter { agg[it] > 0f }.sortedBy { aggEv(it) - alt(it) }
+        val sorted = heroIdx.filter { agg[it] > 0f }.sortedBy { aggEv(it) - alt(it) }
+        // Bluffs / marginal raises are trimmed first; value raises only if the cap still binds.
+        val order = sorted.filter { !protect(it) } + sorted.filter { protect(it) }
         for (h in order) {
             if (excess <= 1e-12) break
             val w = agg[h].toDouble() * weights[h]

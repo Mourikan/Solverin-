@@ -1,5 +1,6 @@
 package com.solverin.engine.turn
 
+import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.core.HandClass
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.FlopEngine
@@ -80,7 +81,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                 bets[h] = t
                 // ThreeFlushTurnBrake: braked hands never overbet. Condensed villain: no stack-off without equity / nuts.
-                val guard = stackOffBlocked(m, p, h, t) || thinValueBlocked(m, p, t)
+                val guard = stackOffBlocked(m, p, h, t) || thinValueBlocked(m, p, t, check[h]!!.ev)
                 if (guard) gated[h] = true
                 val betEv = if ((size > p.standardBet && m.braked(h, facingRange)) || guard) Double.NEGATIVE_INFINITY else t.ev
                 val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, betEv, p.mixBandBb)
@@ -120,9 +121,12 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
     private fun overrideOpen(m: TurnMathEngine, overfolds: Boolean) = overfolds && !spot.threeBetPot && spot.line != FlopLine.RAISE_CALL &&
         !m.station && !m.nit && !(spot.condensedVillain && m.responseFoldLocked)
 
-    /** Thin value vs a range that already called: below thinValueVsCallers vs his calling range, check instead. */
-    private fun thinValueBlocked(m: TurnMathEngine, p: TurnPolicy, t: TurnEvTerms) =
-        spot.condensedVillain && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers
+    /**
+     * Thin value vs a range that already called: below thinValueVsCallers vs his calling range, check instead — unless
+     * the bet beats checking by thinValueGuardEvBb (the edge is then real value, not a thin coin-flip).
+     */
+    private fun thinValueBlocked(m: TurnMathEngine, p: TurnPolicy, t: TurnEvTerms, checkEv: Double) =
+        spot.condensedVillain && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers && t.ev - checkEv < p.thinValueGuardEvBb
 
     private fun condensedScale(p: TurnPolicy, m: TurnMathEngine) = if (m.tightened) p.condensedBluffScale else 1.0
 
@@ -134,20 +138,6 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
         val size: Double, val bet: Double, val total: Double, val bets: Array<TurnEvTerms?>,
         val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray, val fired: BooleanArray,
     )
-
-    private fun enforceMdf(heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, callEv: (Int) -> Double) {
-        var total = 0.0; var folded = 0.0
-        for (h in heroIdx) { total += w[h]; folded += w[h] * fold[h] }
-        var excess = folded - maxFold * total
-        if (total <= 0.0 || excess <= 1e-12) return
-        for (h in heroIdx.filter { fold[it] > 0f }.sortedByDescending(callEv)) {
-            if (excess <= 1e-12) break
-            val cut = minOf(fold[h].toDouble() * w[h], excess)
-            val moved = minOf(fold[h], (cut / w[h]).toFloat())
-            fold[h] -= moved; call[h] += moved
-            excess -= cut
-        }
-    }
 
     private fun facingBet(m: TurnMathEngine, ctx: TurnContext, heroIdx: List<Int>): TurnAnalysis {
         val p = ctx.policy
@@ -197,6 +187,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 heroIdx, m.hero, if (connected) p.checkRaiseCapConnected else p.checkRaiseCap, fRaise, fCall, fFold, capped,
                 aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
                 foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
+                protect = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             )
         }
         fourFlushShield(m, heroIdx, fRaise, fCall, fFold, capped, { call[it]!!.ev },
@@ -207,13 +198,13 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             spot.isDonk && m.donkType == TurnDonkType.WEAK -> minOf(1.0, 1 - mdf + p.weakDonkMdfSlack)
             else -> null
         }
-        if (mdfFloor != null) enforceMdf(heroIdx, m.hero, mdfFloor, fFold, fCall) { call[it]!!.ev }
+        val effFloor = mdfFloor?.let { fl -> MdfFloor.enforce(heroIdx, m.hero, fl, fFold, fCall, bet, minBet, { call[it]!!.equity }) { call[it]!!.ev } }
         return TurnAnalysis(
             spot, m.impact, TurnNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage, m.villainCapped,
             m.heroVsVillain.rangeEquity(m.hero), null, null, mdf, potOdds, minBet,
             mapOf(TurnAction.FOLD to fFold, TurnAction.CALL to fCall, TurnAction.RAISE to fRaise),
             mapOf(TurnAction.CALL to call, TurnAction.RAISE to raise), m.hero, capped,
-            emptyList(), Double.NaN, TurnSizingOptimizer.geometricFraction(spot.effectiveStackBb / pot), mdfFloor, m.donkType,
+            emptyList(), Double.NaN, TurnSizingOptimizer.geometricFraction(spot.effectiveStackBb / pot), effFloor, m.donkType,
             overrideFired = firedR,
         )
     }

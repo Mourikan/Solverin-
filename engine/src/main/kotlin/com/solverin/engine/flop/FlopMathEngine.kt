@@ -411,12 +411,20 @@ class FlopMathEngine(
         val mw = calledMulti(h, betRange, xCall, potBefore + 2 * c, c, stack - c, aggressor = false)
         val pc = xr[0] + xr[1]
         val calledEv = if (pc > 0) (xr[0] * hu.value + xr[1] * mw.value) / pc else 0.0
+        // Squeeze behind: hero gives up the call, or (strong hands) calls the squeeze all-in vs the squeezer's range.
+        val evR = if (xr[2] > 0) maxOf(-c, squeezeCall(h, potBefore, xResp.raise)) else -c
         return FlopEvTerms(
             pFold = 0.0, pCall = pc, pRaise = xr[2], foldWin = 0.0,
             equity = hu.equity, realization = hu.realization, potTotal = hu.potTotal, investment = hu.investment,
-            rake = hu.rake, implied = hu.implied, evVsRaise = -c, calledEv = calledEv, allIn = hu.allIn,
-            ev = pc * calledEv - xr[2] * c,
+            rake = hu.rake, implied = hu.implied, evVsRaise = evR, calledEv = calledEv, allIn = hu.allIn,
+            ev = pc * calledEv + xr[2] * evR,
         )
+    }
+
+    /** Hero calls a third player's squeeze jam (bettor folds): all-in vs the squeeze range, relative to the node. */
+    private fun squeezeCall(h: Int, potBefore: Double, squeezeRange: FloatArray): Double {
+        if (stack <= 0.0) return Double.NEGATIVE_INFINITY
+        return calledMulti(h, null, squeezeRange, potBefore + 2 * stack, stack, 0.0, aggressor = false).value
     }
 
     /** Hero raises a bet of [bet] (villain's street total); a third player behind responds to the raise too. */

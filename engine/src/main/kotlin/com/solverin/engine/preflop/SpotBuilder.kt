@@ -38,6 +38,34 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
         return if (out.any { it > 0f }) out else range
     }
 
+    /**
+     * Hero-side 4-bet range facing a 4-bet: the value core collapsed to [top] is never narrower than QQ+ / AK (a 4-bet
+     * range always holds them, whatever the opener's fold-to-3-bet profile says), and the polarized bluff component of
+     * the population range (hands below the merged region, e.g. A5s) is kept up to [FOUR_BET_BLUFF_TO_VALUE] × value:
+     * collapsing to pure value would leave AA alone and fold KK / AK.
+     */
+    private fun collapseFourBet(range: FloatArray, top: Double): FloatArray {
+        if (!discipline) return range
+        val out = collapse(range, top)
+        for (h in FOUR_BET_VALUE_CORE) out[h] = maxOf(out[h], 1f)
+        var value = 0.0
+        for (h in 0 until HandClass.COUNT) value += out[h].toDouble() * HandClass.combos(h)
+        val bluffs = FloatArray(HandClass.COUNT)
+        var bluffMass = 0.0
+        var cum = 0.0
+        for (h in RANKING.byStrength) {
+            val c = HandClass.combos(h).toDouble()
+            cum += c
+            if (cum <= FOUR_BET_MERGED_TOP * HandClass.TOTAL_COMBOS || out[h] > 0f || range[h] <= 0f) continue
+            bluffs[h] = range[h]; bluffMass += range[h].toDouble() * c
+        }
+        if (bluffMass > 0.0) {
+            val scale = minOf(1.0, FOUR_BET_BLUFF_TO_VALUE * value / bluffMass).toFloat()
+            for (h in 0 until HandClass.COUNT) if (bluffs[h] > 0f) out[h] = bluffs[h] * scale
+        }
+        return out
+    }
+
     fun validate(key: SpotKey): Boolean {
         val h = key.hero; val v = key.villain
         val noCaller = key.caller == null
@@ -150,11 +178,13 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
                 // CO / BB: the 4-bettor's range is condensed further (StakePolicy.fourBetCoBbRangeTop) unless a polarizing lock.
                 val coBb = h == Position.CO || h == Position.BB
                 val fourBetRange = if (polarized(VillainNode.VS_3BET, v, h)) raw
-                else collapse(raw, if (coBb) minOf(FOUR_BET_TOP, ctx.policy.fourBetCoBbRangeTop) else FOUR_BET_TOP)
+                else collapseFourBet(raw, if (coBb) minOf(FOUR_BET_TOP, ctx.policy.fourBetCoBbRangeTop) else FOUR_BET_TOP)
                 val ip = h.isInPositionVs(v)
                 val call = CallNode(pot, y, z, listOf(fourBetRange), ip, 0.0, 3,
                     realizationFactor = if (!ip && discipline) OOP_VS_FOUR_BET else 1.0)
-                val opp = Opponent(v, vm.fourBettorVsJam(v, h), z, stack, null, stack, h.isInPositionVs(v))
+                // The jam is answered by the same 4-bet range the flat is priced against.
+                val jamResponse = if (fourBetRange === raw) vm.fourBettorVsJam(v, h) else vm.fourBettorVsJam(v, h, fourBetRange)
+                val opp = Opponent(v, jamResponse, z, stack, null, stack, h.isInPositionVs(v))
                 SpotNodes(call, RaiseNode(pot, y, stack, listOf(opp), 4))
             }
             Scenario.SQUEEZE -> {
@@ -221,6 +251,10 @@ class SpotBuilder(private val ctx: PreflopContext, private val vm: VillainModel)
         const val POLARIZED_LOCK = 0.65
         const val FIVE_BET_TOP = 0.022
         const val FOUR_BET_TOP = 0.045
+        /** Hands above this strength share are merged value (removed from a collapsed 4-bet range, not bluffs). */
+        const val FOUR_BET_MERGED_TOP = 0.10
+        const val FOUR_BET_BLUFF_TO_VALUE = 0.45
+        val FOUR_BET_VALUE_CORE = intArrayOf(HandClass.parse("AA"), HandClass.parse("KK"), HandClass.parse("QQ"), HandClass.parse("AKs"), HandClass.parse("AKo"))
         const val OOP_VS_FOUR_BET = 0.88
         const val SANDWICHED_CALLER = 0.90
     }

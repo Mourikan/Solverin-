@@ -205,6 +205,8 @@ data class RiverPolicy(
     val persistenceTightening: Double = 0.82,
     /** Thin value vs a range that called two streets: a bet needs this equity vs the calling range, else check. */
     val thinValueVsCallers: Float = 0.54f,
+    /** The thin-value guard yields when betting beats checking by at least this much (bb): a clear edge is value. */
+    val thinValueGuardEvBb: Double = 1.5,
     /** Four-flush / four-straight shield. */
     val fourCardShield: Boolean = true,
 )

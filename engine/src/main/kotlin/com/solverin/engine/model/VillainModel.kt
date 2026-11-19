@@ -69,6 +69,12 @@ class VillainModel(
         Partition.split(openerVs3Bet(o, p).raise, 0.0, c, 1.0, ranking)
     }
 
+    /** The 4-bettor's answer to a jam when hero models his 4-bet range as [fourBetRange] (same calling share). */
+    fun fourBettorVsJam(o: Position, p: Position, fourBetRange: FloatArray): Partition {
+        val c = lock(VillainNode.VS_JAM, o, p)?.call ?: (1 - profile.foldTo5Bet)
+        return Partition.split(fourBetRange, 0.0, c, 1.0, ranking)
+    }
+
     fun callerVsSqueeze(c: Position, o: Position): Partition = m("csq$c$o") {
         val l = lock(VillainNode.VS_SQUEEZE_CALLER, c, o)
         val cold4 = l?.raise ?: 0.04

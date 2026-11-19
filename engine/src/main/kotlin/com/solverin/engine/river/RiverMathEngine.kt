@@ -225,7 +225,8 @@ class RiverMathEngine(
         var live = 0.0
         for (b in idx) if (m and Combos.MASK[b] == 0L) live += range[b]
         val bn = blk.nutBlocker(h); val bf = blk.foldBlocker(h)
-        if (live <= 0.0) return Response(1.0, 0.0, 0.0, 0.5f, 0.5f, 0.5f, 0.5f, 1.0, 0.0, bn, bf)
+        // Hero blocks the whole range: neutral answer (call, coin-flip equity), never a free fold.
+        if (live <= 0.0) return Response(0.0, 1.0, 0.0, 0.5f, 0.5f, 0.5f, 0.5f, 1.0, 1.0, bn, bf)
         val def = defenseShare(size, bn, bf)
         val r = minOf(raiseFrac, def)
         var vrLeft = r * raiseValue * live
@@ -492,7 +493,11 @@ class RiverMathEngine(
             val mw = eqMw * fin3 - b - rake(fin3, eqMw.toDouble())
             val pc = w.pFold + w.pCall
             val called = if (pc > 0) (w.pFold * hu + w.pCall * mw) / pc else 0.0
-            return RiverEvTerms(0.0, pc, w.pRaise, 0.0, eq, fin, b, rk, -b, called, b >= stack, pc * called - w.pRaise * b,
+            // Squeeze behind: hero folds (−b) or calls the squeeze all-in vs the squeezer's raise range (bettor folds).
+            val finSq = potBefore + b + 2 * stack
+            val sq = if (stack > b) w.eqRaise * finSq - stack - rake(finSq, w.eqRaise.toDouble()) else Double.NEGATIVE_INFINITY
+            val evR = maxOf(-b, sq)
+            return RiverEvTerms(0.0, pc, w.pRaise, 0.0, eq, fin, b, rk, evR, called, b >= stack, pc * called + w.pRaise * evR,
                 b, Double.NaN, blk.nutBlocker(h), blk.foldBlocker(h))
         }
         return RiverEvTerms(0.0, 1.0, 0.0, 0.0, eq, fin, b, rk, 0.0, hu, b >= stack, hu, b, Double.NaN, blk.nutBlocker(h), blk.foldBlocker(h))

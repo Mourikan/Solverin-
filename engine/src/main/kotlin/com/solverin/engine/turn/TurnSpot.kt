@@ -231,6 +231,8 @@ data class TurnPolicy(
     val persistenceTightening: Double = 0.88,
     /** Thin value vs a range that already called: a bet needs this equity vs the calling range, else check. */
     val thinValueVsCallers: Float = 0.54f,
+    /** The thin-value guard yields when betting beats checking by at least this much (bb): a clear edge is value. */
+    val thinValueGuardEvBb: Double = 1.5,
     /** Condensed villain (called a flop bet, RAISE_CALL or 3-bet+ pot): bluff-cap ratio × this. */
     val condensedBluffScale: Double = 0.35,
     /** Condensed villain: his P(fold) vs hero's bets / raises × this (the folded mass continues). */

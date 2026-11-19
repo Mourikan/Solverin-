@@ -1,5 +1,6 @@
 package com.solverin.engine.flop
 
+import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.core.HandClass
 
 /**
@@ -110,24 +111,6 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
         }
     }
 
-    /**
-     * Strict MDF vs min-bets: if the range folds more than [maxFold], the folded hands with the highest call EV
-     * are turned into calls until the range folds exactly [maxFold].
-     */
-    private fun enforceMdf(heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, callEv: (Int) -> Double) {
-        var total = 0.0; var folded = 0.0
-        for (h in heroIdx) { total += w[h]; folded += w[h] * fold[h] }
-        var excess = folded - maxFold * total
-        if (total <= 0.0 || excess <= 1e-12) return
-        for (h in heroIdx.filter { fold[it] > 0f }.sortedByDescending(callEv)) {
-            if (excess <= 1e-12) break
-            val cut = minOf(fold[h].toDouble() * w[h], excess)
-            val moved = minOf(fold[h], (cut / w[h]).toFloat())
-            fold[h] -= moved; call[h] += moved
-            excess -= cut
-        }
-    }
-
     private class SizeResult(
         val size: Double, val bet: Double, val total: Double, val bets: Array<FlopEvTerms?>,
         val fc: FloatArray, val fb: FloatArray, val capped: BooleanArray, val fired: BooleanArray,
@@ -177,6 +160,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                 fRaise, fCall, fFold, capped,
                 aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
                 foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+                protect = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
             )
         }
         val mdf = pot / (pot + bet)
@@ -186,14 +170,14 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             donkRead?.type == DonkType.WEAKNESS -> minOf(1.0, 1 - mdf + p.weakDonkMdfSlack)
             else -> null
         }
-        if (mdfFloor != null) enforceMdf(heroIdx, m.hero, mdfFloor, fFold, fCall) { call[it]!!.ev }
+        val effFloor = mdfFloor?.let { fl -> MdfFloor.enforce(heroIdx, m.hero, fl, fFold, fCall, bet, minBet, { call[it]!!.equity }) { call[it]!!.ev } }
         return FlopAnalysis(
             spot, m.flopId, m.texture, FlopNodeType.VS_BET, m.rangeAdvantage, m.nutAdvantage,
             m.heroVsVillain.rangeEquity(m.hero), null, null,
             mdf = mdf, potOdds = potOdds, minBet = minBet, donkRead = donkRead,
             freq = mapOf(FlopAction.FOLD to fFold, FlopAction.CALL to fCall, FlopAction.RAISE to fRaise),
             terms = mapOf(FlopAction.CALL to call, FlopAction.RAISE to raise), heroRange = m.hero, capped = capped,
-            maxFold = mdfFloor, overrideFired = firedR,
+            maxFold = effFloor, overrideFired = firedR,
         )
     }
 }

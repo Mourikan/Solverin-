@@ -1,5 +1,6 @@
 package com.solverin.engine.river
 
+import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.core.HandClass
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.FlopEngine
@@ -39,9 +40,12 @@ class RiverSession(val spot: RiverSpot) {
      */
     private fun overrideOpen(m: RiverMathEngine, overfolds: Boolean) = overfolds && !m.station && !m.nit && !(spot.condensedVillain && m.betFoldLocked)
 
-    /** Thin value vs a range that called two streets: below thinValueVsCallers vs his calling range, check instead. */
-    private fun thinValueBlocked(m: RiverMathEngine, p: RiverPolicy, t: RiverEvTerms) =
-        spot.villainCalledTwoStreets && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers
+    /**
+     * Thin value vs a range that called two streets: below thinValueVsCallers vs his calling range, check instead —
+     * unless the bet beats checking by thinValueGuardEvBb.
+     */
+    private fun thinValueBlocked(m: RiverMathEngine, p: RiverPolicy, t: RiverEvTerms, checkEv: Double) =
+        spot.villainCalledTwoStreets && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers && t.ev - checkEv < p.thinValueGuardEvBb
 
     /** Stack-off guard vs a condensed range: an all-in needs stackOffEquity vs the calling range or a nut hand. */
     private fun stackOffBlocked(m: RiverMathEngine, p: RiverPolicy, h: Int, t: RiverEvTerms): Boolean =
@@ -84,7 +88,7 @@ class RiverSession(val spot: RiverSpot) {
             for (size in sizes) {
                 val t = m.bet(h, size)
                 if (any == null || t.ev > any.ev) any = t
-                if (sizeAllowed(m, p, h, size, t) && !stackOffBlocked(m, p, h, t) && !thinValueBlocked(m, p, t) && (best == null || t.ev > best.ev)) { best = t; bestSize = size }
+                if (sizeAllowed(m, p, h, size, t) && !stackOffBlocked(m, p, h, t) && !thinValueBlocked(m, p, t, check[h]!!.ev) && (best == null || t.ev > best.ev)) { best = t; bestSize = size }
             }
             if (best == null) { betTerms[h] = any; fc[h] = 1f; continue }
             betTerms[h] = best; chosen[h] = bestSize
@@ -117,20 +121,6 @@ class RiverSession(val spot: RiverSpot) {
         val act = spot.heroBetAction
         return analysis(m, mapOf(RiverAction.CHECK to fc, act to fb), mapOf(RiverAction.CHECK to check, act to betTerms), chosen, capped,
             sizes, null, null, false, null, null, fired = fired)
-    }
-
-    private fun enforceMdf(heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, callEv: (Int) -> Double) {
-        var total = 0.0; var folded = 0.0
-        for (h in heroIdx) { total += w[h]; folded += w[h] * fold[h] }
-        var excess = folded - maxFold * total
-        if (total <= 0.0 || excess <= 1e-12) return
-        for (h in heroIdx.filter { fold[it] > 0f }.sortedByDescending(callEv)) {
-            if (excess <= 1e-12) break
-            val cut = minOf(fold[h].toDouble() * w[h], excess)
-            val moved = minOf(fold[h], (cut / w[h]).toFloat())
-            fold[h] -= moved; call[h] += moved
-            excess -= cut
-        }
     }
 
     private fun facingBet(m: RiverMathEngine, p: RiverPolicy, ctx: RiverContext, heroIdx: List<Int>): RiverAnalysis {
@@ -177,7 +167,8 @@ class RiverSession(val spot: RiverSpot) {
         )
         if (!spot.heroInPosition) {
             TurnBluffCap.capTotal(heroIdx, m.hero, p.checkRaiseCap, fR, fC, fF, capped,
-                aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev }, foldAllowed = ::foldAllowed)
+                aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev }, foldAllowed = ::foldAllowed,
+                protect = { (raise[it]?.equity ?: 0f) >= 0.5f })
         }
         val mdf = pot / (pot + bet)
         val floor = when {
@@ -185,11 +176,11 @@ class RiverSession(val spot: RiverSpot) {
             donk == RiverDonkType.WEAK -> minOf(1.0, 1 - mdf + p.weakDonkMdfSlack)
             else -> null
         }
-        if (floor != null) enforceMdf(heroIdx, m.hero, floor, fF, fC) { call[it]!!.ev }
+        val effFloor = floor?.let { fl -> MdfFloor.enforce(heroIdx, m.hero, fl, fF, fC, bet, minBet, { call[it]!!.equity }) { call[it]!!.ev } }
         val bluff = m.bluffShare(bet); val alpha = m.alpha(bet)
         return analysis(m, mapOf(RiverAction.FOLD to fF, RiverAction.CALL to fC, RiverAction.RAISE to fR),
             mapOf(RiverAction.CALL to call, RiverAction.RAISE to raise), DoubleArray(Combos.COUNT) { Double.NaN }, capped,
-            emptyList(), mdf, potOdds, minBet, floor, donk, bluff, alpha, firedR)
+            emptyList(), mdf, potOdds, minBet, effFloor, donk, bluff, alpha, firedR)
     }
 
     private fun analysis(
