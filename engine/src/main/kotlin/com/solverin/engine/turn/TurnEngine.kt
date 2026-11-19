@@ -1,5 +1,6 @@
 package com.solverin.engine.turn
 
+import com.solverin.engine.math.JamGuard
 import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.core.HandClass
 import com.solverin.engine.flop.Combos
@@ -81,7 +82,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                 bets[h] = t
                 // ThreeFlushTurnBrake: braked hands never overbet. Condensed villain: no stack-off without equity / nuts.
-                val guard = stackOffBlocked(m, p, h, t) || thinValueBlocked(m, p, t, check[h]!!.ev)
+                val guard = stackOffBlocked(m, p, h, t) || thinValueBlocked(m, p, t, check[h]!!.ev) || jamGuard(m, h, t, facingRange)
                 if (guard) gated[h] = true
                 val betEv = if ((size > p.standardBet && m.braked(h, facingRange)) || guard) Double.NEGATIVE_INFINITY else t.ev
                 val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, betEv, p.mixBandBb)
@@ -128,6 +129,13 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
     private fun thinValueBlocked(m: TurnMathEngine, p: TurnPolicy, t: TurnEvTerms, checkEv: Double) =
         spot.condensedVillain && !m.station && t.equity >= 0.5f && t.equity < p.thinValueVsCallers && t.ev - checkEv < p.thinValueGuardEvBb
 
+    /** Suicidal jam: < 25% vs the calling range, < 35% folds, and not a draw with ≥ 8 outs vs [range]. */
+    private fun jamGuard(m: TurnMathEngine, h: Int, t: TurnEvTerms, range: FloatArray): Boolean {
+        if (!t.allIn || t.equity >= JamGuard.BLUFF_MAX_EQUITY || t.pFold >= JamGuard.MIN_FOLD) return false
+        val o = m.outsVs(range)
+        return JamGuard.suicidal(t.allIn, t.equity, t.pFold, o.clean[h] + o.dirty[h])
+    }
+
     private fun condensedScale(p: TurnPolicy, m: TurnMathEngine) = if (m.tightened) p.condensedBluffScale else 1.0
 
     /** Stack-off guard vs a condensed range: an all-in needs stackOffEquity vs the calling range or a nut hand. */
@@ -149,6 +157,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
         val call = arrayOfNulls<TurnEvTerms>(Combos.COUNT)
         val raise = arrayOfNulls<TurnEvTerms>(Combos.COUNT)
         val fFold = FloatArray(Combos.COUNT); val fCall = FloatArray(Combos.COUNT); val fRaise = FloatArray(Combos.COUNT)
+        val jamGuardedR = BooleanArray(Combos.COUNT)
         val potOdds = bet / (potBefore + bet)
         for (h in heroIdx) {
             val c = m.call(h, potBefore, bet, betRange)
@@ -161,7 +170,9 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
             // Four-flush shield: no all-in call without a flush card.
             val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h)))) Double.NEGATIVE_INFINITY else c.ev
-            val raiseEv = if (brakeRaise || (r != null && stackOffBlocked(m, p, h, r))) Double.NEGATIVE_INFINITY else r?.ev ?: Double.NEGATIVE_INFINITY
+            if (r != null && jamGuard(m, h, r, betRange)) jamGuardedR[h] = true
+            val raiseEv = if (brakeRaise || (r != null && (stackOffBlocked(m, p, h, r) || jamGuardedR[h])))
+                Double.NEGATIVE_INFINITY else r?.ev ?: Double.NEGATIVE_INFINITY
             val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, callEv, raiseEv, p.mixBandBb)
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
@@ -190,6 +201,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
                 protect = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             )
         }
+        for (h in heroIdx) if (jamGuardedR[h]) capped[h] = true
         fourFlushShield(m, heroIdx, fRaise, fCall, fFold, capped, { call[it]!!.ev },
             { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) })
         val mdf = pot / (pot + bet)

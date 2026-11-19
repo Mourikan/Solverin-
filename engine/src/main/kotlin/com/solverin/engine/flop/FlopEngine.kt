@@ -1,5 +1,6 @@
 package com.solverin.engine.flop
 
+import com.solverin.engine.math.JamGuard
 import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.core.HandClass
 
@@ -77,10 +78,13 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                     val bets = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
                     val fc = FloatArray(Combos.COUNT); val fb = FloatArray(Combos.COUNT)
                     val fired = BooleanArray(Combos.COUNT)
+                    val jamGuarded = BooleanArray(Combos.COUNT)
                     for (h in heroIdx) {
                         val t = m.aggressive(h, pot, b, 0.0, 0.0, resp, level = 1, extraResp = xResp)
                         bets[h] = t
-                        val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, t.ev, p.mixBandBb)
+                        if (JamGuard.suicidal(t.allIn, t.equity, t.pFold, m.outs[h])) jamGuarded[h] = true
+                        val betEv = if (jamGuarded[h]) Double.NEGATIVE_INFINITY else t.ev
+                        val mix = FlopEngine.mix(Double.NEGATIVE_INFINITY, check[h]!!.ev, betEv, p.mixBandBb)
                         fc[h] = mix[1]; fb[h] = mix[2]
                     }
                     val foldAll = resp.foldTotal / resp.priorTotal * (xResp?.let { it.foldTotal / it.priorTotal } ?: 1.0)
@@ -93,6 +97,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                         exempt = { h -> (!ctx.locks.nitRead && foldAll >= 1 - m.villainModel.mdf(pot, b) + p.overrideOverfoldMargin && m.outs[h] >= p.exploitOverrideOuts &&
                             bets[h]!!.ev - check[h]!!.ev >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * pot)).also { if (it) fired[h] = true } },
                     )
+                    for (h in heroIdx) if (jamGuarded[h]) capped[h] = true
                     var total = 0.0
                     for (h in heroIdx) total += m.hero[h] * (fb[h] * bets[h]!!.ev + fc[h] * check[h]!!.ev)
                     if (best == null || total > best.total) best = SizeResult(size, b, total, bets, fc, fb, capped, fired)
@@ -128,6 +133,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
         val call = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
         val raise = arrayOfNulls<FlopEvTerms>(Combos.COUNT)
         val fFold = FloatArray(Combos.COUNT); val fCall = FloatArray(Combos.COUNT); val fRaise = FloatArray(Combos.COUNT)
+        val jamGuardedR = BooleanArray(Combos.COUNT)
         val potOdds = bet / (potBefore + bet)
         for (h in heroIdx) {
             val c = m.call(h, potBefore, bet, betRange)
@@ -135,7 +141,9 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             call[h] = c; raise[h] = r
             // Min-bet guard: with pot-odds equity a fold is never allowed.
             val foldAllowed = !(minBet && c.equity >= potOdds)
-            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, c.ev, r?.ev ?: Double.NEGATIVE_INFINITY, p.mixBandBb)
+            if (r != null && JamGuard.suicidal(r.allIn, r.equity, r.pFold, m.outs[h])) jamGuardedR[h] = true
+            val raiseEv = if (r == null || jamGuardedR[h]) Double.NEGATIVE_INFINITY else r.ev
+            val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, c.ev, raiseEv, p.mixBandBb)
             fFold[h] = mix[0]; fCall[h] = mix[1]; fRaise[h] = mix[2]
         }
         val raiseResp = m.villainModel.respondToRaise(betRange)
@@ -153,6 +161,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                 (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * potBefore))
                 .also { if (it) firedR[h] = true } },
         )
+        for (h in heroIdx) if (jamGuardedR[h]) capped[h] = true
         if (!spot.heroInPosition) {
             val connected = m.texture.connectivity == Connectivity.HIGH || m.texture.volatility >= p.connectedVolatility
             FlopBluffCap.capTotal(

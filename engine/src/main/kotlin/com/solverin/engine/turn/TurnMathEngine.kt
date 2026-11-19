@@ -1,5 +1,6 @@
 package com.solverin.engine.turn
 
+import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.flop.BoardStrength
 import com.solverin.engine.flop.ComboPartition
 import com.solverin.engine.flop.Combos
@@ -423,7 +424,8 @@ class TurnMathEngine(
         if (opponents > 1) r *= Math.pow(MULTIWAY_DECAY, (opponents - 1).toDouble())
         val eqR = minOf(e * r, MAX_EQR)
         val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind, eqR)
-        var imp = implied(h, o, pot, behind)
+        // No live equity, no implied odds: a hand drawing dead cannot win future chips.
+        var imp = if (e < MdfFloor.MIN_LIVE_EQUITY) 0.0 else implied(h, o, pot, behind)
         var rio = rio(h, o, pot, behind)
         if (opponents > 1) { imp *= MULTIWAY_DECAY; rio /= MULTIWAY_DECAY }
         // Hero keeps the option to fold on the river: the continuation (EQ·R·Pot + implied − RIO) is never below 0,
@@ -448,6 +450,10 @@ class TurnMathEngine(
         )
 
     /** Hero bets / raises to street total [raiseTo] (level 1 = bet: may jam over a raise; level 2 = raise). */
+    /** [range] if hero's cards leave any of it live, else [fallback] (a fully blocked calling range has no equity info). */
+    private fun liveOr(h: Int, range: FloatArray, fallback: FloatArray): FloatArray =
+        if (Combos.remaining(h, range, Combos.total(range)) > 0.0) range else fallback
+
     fun aggressive(
         h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int,
         extraResp: ComboPartition? = null, xInv: Double = 0.0,
@@ -456,7 +462,7 @@ class TurnMathEngine(
         val x = minOf(raiseTo, stack)
         val a = x - heroInv
         val pr0 = leveraged(h, resp.probabilities(h), level, potBefore + a + (x - vInv), stack - x)
-        val callRange = if (x >= stack) resp.continueRange else resp.call
+        val callRange = liveOr(h, if (x >= stack) resp.continueRange else resp.call, resp.continueRange)
         val br = called(h, callRange, potBefore + a + (x - vInv), a, stack - x, aggressor = true)
         // Condensed villain (tightened): a bluff / semi-bluff (< 50% vs his calling range) gets less fold equity than his
         // unconditional profile says; value hands keep the profile (the extra callers would be weaker, never stronger).

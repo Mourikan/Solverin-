@@ -1,5 +1,6 @@
 package com.solverin.engine.flop
 
+import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.math.RakeModel
 import java.util.IdentityHashMap
 
@@ -251,7 +252,8 @@ class FlopMathEngine(
         if (opponents > 1) r *= Math.pow(MULTIWAY_DECAY, (opponents - 1).toDouble())
         val eqR = minOf(e * r, MAX_EQR)
         val rk = RakeModel.charge(ctx.rake, ctx.rakeAttribution, pot, behind, eqR)
-        var imp = implied(h, main, pot, behind)
+        // No live equity, no implied odds: a hand drawing dead cannot win future chips.
+        var imp = if (e < MdfFloor.MIN_LIVE_EQUITY) 0.0 else implied(h, main, pot, behind)
         if (opponents > 1) imp *= MULTIWAY_DECAY
         return Branch(eqR * pot - invest - rk + imp, e, r.toFloat(), pot, invest, rk, imp, false)
     }
@@ -272,6 +274,10 @@ class FlopMathEngine(
      * (villain's current bet included); [heroInv] / [vInv] = chips already in this street.
      * level 1 = bet (hero may jam over a raise), level 2 = raise (hero calls / folds a re-raise).
      */
+    /** [range] if hero's cards leave any of it live, else [fallback] (a fully blocked calling range has no equity info). */
+    private fun liveOr(h: Int, range: FloatArray, fallback: FloatArray): FloatArray =
+        if (Combos.remaining(h, range, Combos.total(range)) > 0.0) range else fallback
+
     fun aggressive(
         h: Int, potBefore: Double, raiseTo: Double, heroInv: Double, vInv: Double, resp: ComboPartition, level: Int,
         extraResp: ComboPartition? = null, xInv: Double = 0.0,
@@ -284,7 +290,7 @@ class FlopMathEngine(
         var pc = pr0[1]; var pr = pr0[2]
         if (x >= stack) { pc += pr; pr = 0.0 }
         val potCalled = potBefore + a + (x - vInv)
-        val callRange = if (x >= stack) resp.continueRange else resp.call
+        val callRange = liveOr(h, if (x >= stack) resp.continueRange else resp.call, resp.continueRange)
         val br = called(h, callRange, potCalled, a, stack - x, aggressor = true)
         val evR = if (pr > 0) vsReraise(h, potBefore + a, x, vInv, a, resp.raise, level) else 0.0
         return FlopEvTerms(

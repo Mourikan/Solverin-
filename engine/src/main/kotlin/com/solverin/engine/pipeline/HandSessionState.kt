@@ -52,6 +52,26 @@ object BayesianFloor {
     /** Minimum weight of hero's own combo in his range (hero holds it even when off his solved strategy). */
     const val HERO_FLOOR = 1e-3f
 
+    /** A multiway villain range below this many combos is degenerate (nut-only) and is blended with its prior. */
+    const val MULTIWAY_MIN_COMBOS = 4.0
+
+    /**
+     * Multiway floor (in place): when [range] holds fewer than [MULTIWAY_MIN_COMBOS] combos, the live part of [prior]
+     * (the wider range he continued with on the previous street) is mixed in until the floor mass is reached.
+     * Returns true when the range was blended.
+     */
+    fun multiway(range: FloatArray, prior: FloatArray, board: IntArray): Boolean {
+        val mass = Combos.total(range)
+        if (mass >= MULTIWAY_MIN_COMBOS) return false
+        val dead = Combos.mask(board)
+        var live = 0.0
+        for (k in 0 until Combos.COUNT) if (Combos.isLive(k, dead) && prior[k] > range[k]) live += prior[k] - range[k]
+        if (live <= 0.0) return false
+        val lambda = minOf(1.0, (MULTIWAY_MIN_COMBOS - mass) / live).toFloat()
+        for (k in 0 until Combos.COUNT) if (Combos.isLive(k, dead) && prior[k] > range[k]) range[k] += lambda * (prior[k] - range[k])
+        return true
+    }
+
     fun apply(filtered: FloatArray, prior: FloatArray, board: IntArray): Pair<FloatArray, Boolean> {
         if (Combos.total(filtered) >= MIN_MASS) return filtered to false
         val dead = Combos.mask(board)

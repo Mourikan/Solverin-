@@ -219,9 +219,14 @@ class HandPipelineEngine(
     /** Applies [filtered] ranges to every seat with the Bayesian floor and hero's own-combo floor; returns smoothed seats. */
     private fun Ctx.update(next: Map<Seat, FloatArray>, board: IntArray): Pair<Set<Seat>, Boolean> {
         val smoothed = HashSet<Seat>()
+        val multiway = state.seats.size >= 3
         for ((seat, w) in next) {
-            val (r, sm) = BayesianFloor.apply(w, state.ranges.getValue(seat), board)
-            if (sm) smoothed += seat
+            val prior = state.ranges.getValue(seat)
+            val (r, sm) = BayesianFloor.apply(w, prior, board)
+            // Multiway: a villain range degenerated below MULTIWAY_MIN_COMBOS (only the nuts left) is blended with his
+            // wider continuing range of the previous street, so a third player never "always has it".
+            val mw = multiway && seat != hero && BayesianFloor.multiway(r, prior, board)
+            if (sm || mw) smoothed += seat
             state.ranges[seat] = r
         }
         val heroRange = state.ranges.getValue(hero)

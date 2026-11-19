@@ -5,7 +5,11 @@ import com.solverin.engine.core.Position
 import com.solverin.engine.core.Stake
 import com.solverin.engine.flop.ComboPartition
 import com.solverin.engine.flop.Combos
+import com.solverin.engine.flop.Draws
+import com.solverin.engine.flop.FlopAction
+import com.solverin.engine.math.JamGuard
 import com.solverin.engine.math.MdfFloor
+import com.solverin.engine.pipeline.BayesianFloor
 import com.solverin.engine.math.Realization
 import com.solverin.engine.model.NodeLock
 import com.solverin.engine.model.NodeLocks
@@ -202,6 +206,57 @@ class DecisionAuditFixesTest {
             for (i in 1 until pairs.size) {
                 val hi = 1f - a.strategy.fold(h(pairs[i - 1])); val lo = 1f - a.strategy.fold(h(pairs[i]))
                 assertTrue(hi >= lo - 1e-6f, "$stake ${pairs[i - 1]} continues ($hi) at least as often as ${pairs[i]} ($lo)")
+            }
+        }
+    }
+
+    // ---- Postflop closing patches: multiway floor, jam guard, no implied odds without equity -------------------------
+
+    @Test fun multiwayFloorBlendsADegenerateThirdRange() {
+        val board = intArrayOf(com.solverin.engine.core.Card.parse("8s"), com.solverin.engine.core.Card.parse("As"), com.solverin.engine.core.Card.parse("3s"))
+        val prior = FloatArray(Combos.COUNT) { 0.05f }
+        val range = FloatArray(Combos.COUNT).also { it[Combos.parse("KsQs")] = 1f; it[Combos.parse("Ks5s")] = 1f }
+        assertTrue(BayesianFloor.multiway(range, prior, board))
+        assertEquals(BayesianFloor.MULTIWAY_MIN_COMBOS, Combos.total(range), 1e-3, "floor mass reached")
+        assertTrue(range[Combos.parse("7d7c")] > 0f, "non-nut hands of his previous range are back")
+        val wide = FloatArray(Combos.COUNT) { 1f }
+        assertTrue(!BayesianFloor.multiway(wide, prior, board), "a healthy range is untouched")
+    }
+
+    @Test fun noSuicidalJamsAndNoImpliedOddsDrawingDead() {
+        assertTrue(JamGuard.suicidal(true, 0.10f, 0.20))
+        assertTrue(!JamGuard.suicidal(true, 0.20f, 0.20, outs = 9), "a 9-out draw is a semi-bluff")
+        assertTrue(!JamGuard.suicidal(false, 0.10f, 0.20) && !JamGuard.suicidal(true, 0.10f, 0.40))
+        assertTrue(JamGuard.blockedVsRead(true, 0.20f, true, 1.0) && !JamGuard.blockedVsRead(true, 0.20f, true, 5.0))
+        val scripts = listOf(
+            HandScript(Stake.NL5, PreflopAction(PreflopLine.RFI_CALL, Position.BTN, Position.SB), Seat.OPENER, "QsAs", "5cKc8c", "Qd", "8s",
+                StreetScript(StreetKind.BET_CALL, Seat.RESPONDER, 0.05), StreetScript(StreetKind.BET_CALL, Seat.RESPONDER)),
+            HandScript(Stake.NL100, PreflopAction(PreflopLine.RFI_COLD_CALL_BB_CALL, Position.HJ, Position.BTN), Seat.RESPONDER, "JsQd", "AdAs9h", "9s", "7h",
+                StreetScript(StreetKind.MULTIWAY_BET_CALL, Seat.RESPONDER, 1.25), StreetScript(StreetKind.MULTIWAY_BET_CALL, Seat.THIRD), stackBb = 40.0),
+            HandScript(Stake.NL200, PreflopAction(PreflopLine.THREE_BET_CALL, Position.SB, Position.BB), Seat.RESPONDER, "KsJh", "Kh8dJs", "8h", "6d",
+                StreetScript(StreetKind.BET_CALL, Seat.RESPONDER), StreetScript(StreetKind.BET_CALL, Seat.RESPONDER), RiverScript(0.33)),
+        )
+        for (s in scripts) {
+            val r = pipeline.play(s)
+            r.report(Street.FLOP)?.flop?.let { a ->
+                for (c in 0 until Combos.COUNT) if (a.heroRange[c] > 0f) {
+                    a.terms(FlopAction.CALL, c)?.let { x -> if (x.equity < MdfFloor.MIN_LIVE_EQUITY) assertEquals(0.0, x.implied, 0.0, "${Combos.name(c)} implied odds drawing dead") }
+                    for (act in listOf(FlopAction.BET, FlopAction.RAISE, FlopAction.DONK)) a.terms(act, c)?.let { x ->
+                        if (a.frequency(act, c) > 0.5f) assertTrue(!JamGuard.suicidal(x.allIn, x.equity, x.pFold, Draws.outs(a.spot.board, c)), "flop ${Combos.name(c)} suicidal $act")
+                    }
+                }
+            }
+            r.report(Street.TURN)?.turn?.let { a ->
+                for (c in 0 until Combos.COUNT) if (a.heroRange[c] > 0f) {
+                    a.terms(TurnAction.CALL, c)?.let { x -> if (x.equity < MdfFloor.MIN_LIVE_EQUITY) assertEquals(0.0, x.impliedRiver, 0.0, "${Combos.name(c)} turn implied drawing dead") }
+                }
+            }
+            r.report(Street.RIVER)?.river?.let { a ->
+                for (c in 0 until Combos.COUNT) if (a.heroRange[c] > 0f) for (act in a.actions) {
+                    val x = a.terms(act, c) ?: continue
+                    if (act != RiverAction.CHECK && act != RiverAction.CALL && act != RiverAction.FOLD && a.frequency(act, c) > 0.5f)
+                        assertTrue(!JamGuard.suicidal(x.allIn, x.equity, x.pFold), "river ${Combos.name(c)} suicidal $act eq=${x.equity} pF=${x.pFold}")
+                }
             }
         }
     }

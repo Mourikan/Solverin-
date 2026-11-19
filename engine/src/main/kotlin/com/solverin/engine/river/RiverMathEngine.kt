@@ -210,6 +210,10 @@ class RiverMathEngine(
     val betFoldLocked: Boolean get() = ctx.locks[RiverVillainNode.VS_BET]?.fold != null || ctx.locks[RiverVillainNode.VS_OVERBET]?.fold != null
     /** NIT node-lock read: no PostflopMassiveExploitOverride. */
     val nit: Boolean get() = ctx.locks.nitRead
+    /** Maniac read: a locked river betting range that is bluff-heavy (value share ≤ MANIAC_VALUE_SHARE). */
+    val maniac: Boolean get() = (ctx.locks[RiverVillainNode.BET]?.valueShare ?: 1.0) <= MANIAC_VALUE_SHARE
+    /** Villain's live river range (combos). */
+    val villainCombos: Double get() = Combos.total(s.villain)
     val station: Boolean get() = ctx.locks[RiverVillainNode.VS_BET]?.fold?.let { it <= p.stationFold } ?: false
 
     /** Villain's per-hand response to hero's bet: probabilities, equities vs the call / raise subsets. */
@@ -599,6 +603,7 @@ class RiverMathEngine(
     }
 
     companion object {
+        const val MANIAC_VALUE_SHARE = 0.5
         const val REF_SIZE = 0.66
         const val OVER_SIZE = 1.5
         const val MAX_FOLD = 0.9

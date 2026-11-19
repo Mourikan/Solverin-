@@ -1,5 +1,6 @@
 package com.solverin.engine.river
 
+import com.solverin.engine.math.JamGuard
 import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.core.HandClass
 import com.solverin.engine.flop.Combos
@@ -51,6 +52,10 @@ class RiverSession(val spot: RiverSpot) {
     private fun stackOffBlocked(m: RiverMathEngine, p: RiverPolicy, h: Int, t: RiverEvTerms): Boolean =
         spot.condensedVillain && !m.station && t.allIn && t.equity < p.stackOffEquity && !(m.eqTotal(h) >= p.overbetValueEquity)
 
+    /** Suicidal bluff jam (JamGuard), including any bluff jam vs a collapsed station / maniac range. */
+    private fun jamBlocked(m: RiverMathEngine, t: RiverEvTerms): Boolean =
+        JamGuard.suicidal(t.allIn, t.equity, t.pFold) || JamGuard.blockedVsRead(t.allIn, t.equity, m.station || m.maniac, m.villainCombos)
+
     /** Size gates: showdown protection, block / overbet polarization, four-card shield. */
     private fun sizeAllowed(m: RiverMathEngine, p: RiverPolicy, h: Int, size: Double, t: RiverEvTerms): Boolean {
         val eqT = m.eqTotal(h)
@@ -88,7 +93,7 @@ class RiverSession(val spot: RiverSpot) {
             for (size in sizes) {
                 val t = m.bet(h, size)
                 if (any == null || t.ev > any.ev) any = t
-                if (sizeAllowed(m, p, h, size, t) && !stackOffBlocked(m, p, h, t) && !thinValueBlocked(m, p, t, check[h]!!.ev) && (best == null || t.ev > best.ev)) { best = t; bestSize = size }
+                if (sizeAllowed(m, p, h, size, t) && !stackOffBlocked(m, p, h, t) && !jamBlocked(m, t) && !thinValueBlocked(m, p, t, check[h]!!.ev) && (best == null || t.ev > best.ev)) { best = t; bestSize = size }
             }
             if (best == null) { betTerms[h] = any; fc[h] = 1f; continue }
             betTerms[h] = best; chosen[h] = bestSize
@@ -142,7 +147,7 @@ class RiverSession(val spot: RiverSpot) {
                 val value = r.equity >= 0.5f
                 if (m.fourCardBoard && ((value && !m.shieldMade(h)) || (!value && !m.shieldBlocker(h)))) raiseEv = Double.NEGATIVE_INFINITY
                 if (donk == RiverDonkType.POLARIZED && !value && r.bNut >= 1.0) raiseEv = Double.NEGATIVE_INFINITY
-                if (stackOffBlocked(m, p, h, r)) raiseEv = Double.NEGATIVE_INFINITY
+                if (stackOffBlocked(m, p, h, r) || jamBlocked(m, r)) raiseEv = Double.NEGATIVE_INFINITY
             }
             val mix = FlopEngine.mix(if (foldAllowed(h)) 0.0 else Double.NEGATIVE_INFINITY, c.ev, raiseEv, p.mixBandBb)
             fF[h] = mix[0]; fC[h] = mix[1]; fR[h] = mix[2]
