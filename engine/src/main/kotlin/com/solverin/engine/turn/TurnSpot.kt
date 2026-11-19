@@ -233,6 +233,8 @@ data class TurnPolicy(
     val thinValueVsCallers: Float = 0.54f,
     /** The thin-value guard yields when betting beats checking by at least this much (bb): a clear edge is value. */
     val thinValueGuardEvBb: Double = 1.5,
+    /** The four-flush shield (no all-in call without a flush card) yields when the call beats folding by this much. */
+    val fourFlushShieldMaxEvBb: Double = 2.0,
     /** Condensed villain (called a flop bet, RAISE_CALL or 3-bet+ pot): bluff-cap ratio × this. */
     val condensedBluffScale: Double = 0.35,
     /** Condensed villain: his P(fold) vs hero's bets / raises × this (the folded mass continues). */

@@ -87,7 +87,8 @@ object TurnBluffCap {
             agg[h] -= removed
             excess -= cut
             capped[h] = true
-            val toPassive = fold == null || !foldAllowed(h) || passiveEv(h) >= 0.0
+            // A trimmed value raise keeps the hand (passive line), it is never turned into a fold.
+            val toPassive = fold == null || !foldAllowed(h) || passiveEv(h) >= 0.0 || protect(h)
             if (toPassive) passive[h] += removed else fold!![h] += removed
         }
     }

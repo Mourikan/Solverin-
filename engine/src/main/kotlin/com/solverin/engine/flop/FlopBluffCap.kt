@@ -92,7 +92,7 @@ object FlopBluffCap {
             agg[h] -= removed
             excess -= cut
             capped[h] = true
-            val toPassive = fold == null || !foldAllowed(h) || passiveEv(h) >= 0.0
+            val toPassive = fold == null || !foldAllowed(h) || passiveEv(h) >= 0.0 || protect(h)
             if (toPassive) passive[h] += removed else fold!![h] += removed
         }
     }

@@ -169,7 +169,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             val foldAllowed = !MdfFloor.minBetFoldForbidden(minBet, c.equity, potOdds, c.ev)
             // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
             // Four-flush shield: no all-in call without a flush card.
-            val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h)))) Double.NEGATIVE_INFINITY else c.ev
+            val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h) && c.ev < p.fourFlushShieldMaxEvBb))) Double.NEGATIVE_INFINITY else c.ev
             if (r != null && jamGuard(m, h, r, betRange)) jamGuardedR[h] = true
             val raiseEv = if (brakeRaise || (r != null && (stackOffBlocked(m, p, h, r) || jamGuardedR[h])))
                 Double.NEGATIVE_INFINITY else r?.ev ?: Double.NEGATIVE_INFINITY

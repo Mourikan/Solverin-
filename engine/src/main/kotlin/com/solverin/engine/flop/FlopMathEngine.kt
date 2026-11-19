@@ -425,7 +425,7 @@ class FlopMathEngine(
         val pc = xr[0] + xr[1]
         val calledEv = if (pc > 0) (xr[0] * hu.value + xr[1] * mw.value) / pc else 0.0
         // Squeeze behind: hero gives up the call, or (strong hands) calls the squeeze all-in vs the squeezer's range.
-        val evR = if (xr[2] > 0) maxOf(-c, squeezeCall(h, potBefore, xResp.raise)) else -c
+        val evR = if (xr[2] > 0) maxOf(-c, squeezeCall(h, potBefore, liveOr(h, xResp.raise, xResp.continueRange))) else -c
         return FlopEvTerms(
             pFold = 0.0, pCall = pc, pRaise = xr[2], foldWin = 0.0,
             equity = hu.equity, realization = hu.realization, potTotal = hu.potTotal, investment = hu.investment,

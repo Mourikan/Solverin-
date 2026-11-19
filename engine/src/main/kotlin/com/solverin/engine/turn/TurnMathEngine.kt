@@ -595,7 +595,7 @@ class TurnMathEngine(
         val pc = xr[0] + xr[1]
         val calledEv = if (pc > 0) (xr[0] * hu.value + xr[1] * mw.value) / pc else 0.0
         // Squeeze behind: hero gives up the call, or (strong hands) calls the squeeze all-in vs the squeezer's range.
-        val evR = if (xr[2] > 0 && stack > 0.0) maxOf(-c, calledMulti(h, null, xResp.raise, potBefore + 2 * stack, stack, 0.0, aggressor = false).value) else -c
+        val evR = if (xr[2] > 0 && stack > 0.0) maxOf(-c, calledMulti(h, null, liveOr(h, xResp.raise, xResp.continueRange), potBefore + 2 * stack, stack, 0.0, aggressor = false).value) else -c
         return terms(0.0, pc, xr[2], 0.0, hu, calledEv, evR, needsImplied(h, betRange, hu, c, potBefore))
     }
 
