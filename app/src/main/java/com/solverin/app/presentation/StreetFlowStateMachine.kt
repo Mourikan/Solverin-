@@ -160,6 +160,8 @@ object StreetFlowStateMachine {
         val seat = s.seat(p)
         val left = s.stackLeft(p)
         val toCall = s.toCall(p)
+        // A short all-in that does not exceed the street maximum is an all-in call.
+        if (kind == ActKind.ALL_IN && seat.streetInvest + left <= s.maxBet + 1e-9 && toCall > 1e-9) return act(s, ActKind.CALL, isHero = isHero)
         var maxBet = s.maxBet; var lastRaise = s.lastRaise; var level = s.raiseLevel
         var acted = s.acted + p
         val newSeat: SeatState
@@ -309,6 +311,12 @@ object StreetFlowStateMachine {
             if (to >= minTo - 1e-9 && out.none { kotlin.math.abs(it.toAmount - to) < 1e-6 }) out += VillainOption("$label ${fmt(to)}", if (s.maxBet <= 0.0) ActKind.BET else ActKind.RAISE, to)
         }
         if (toCall > 1e-9) out += VillainOption("Fold", ActKind.FOLD, seat.streetInvest)
+        // Stack at or below the amount owed: the only continue is an all-in call.
+        val shortAllIn = toCall > 1e-9 && cap <= s.maxBet + 1e-9
+        if (shortAllIn) {
+            out += VillainOption("All-In ${fmt(cap)}", ActKind.CALL, cap)
+            return out
+        }
         if (s.street == TableStreet.PREFLOP) {
             if (toCall > 1e-9) {
                 if (s.raiseLevel == 0) out += VillainOption("Limp ${fmt(s.maxBet)}", ActKind.LIMP, s.maxBet)

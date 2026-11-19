@@ -631,4 +631,246 @@ class SolverViewModelTest {
         s.options.firstOrNull { it.kind == ActKind.CALL }?.let { assertEquals(7.5 - 2.5, it.amountBb, 1e-9) }
         s.options.firstOrNull { it.kind == ActKind.RAISE }?.let { assertEquals("4-BET", it.shortName) }
     }
+
+    // ---- audit regressions: custom sizes, street closing, all-in run-outs, undo / board re-sync ---------------------
+
+    /** Never a dead sub-state: an open round always points at a villain with options, a deal step needs 1–3 cards. */
+    private fun assertLive(s: HandViewState) {
+        assertFalse("computing settled", s.isComputing)
+        when (s.phase) {
+            StreetFlowPhase.VILLAIN_ACTION_STEPPER -> {
+                assertNotNull("someone to act at ${s.street}", s.toAct)
+                assertTrue("hero's turn is auto-assumed (${s.history})", s.toAct != s.heroPosition)
+                assertTrue("villain options for ${s.toAct}", s.villainOptions.isNotEmpty())
+                assertTrue(s.villainOptions.all { it.toAmount.isFinite() })
+            }
+            StreetFlowPhase.DEAL_BOARD_CARDS -> {
+                assertTrue("cards needed ${s.cardsNeeded}", s.cardsNeeded in 1..3)
+            }
+            else -> {}
+        }
+    }
+
+    /** Villains answer until the round closes: CALL when facing chips, CHECK otherwise (bounded: no infinite loop). */
+    private fun TestScope.villainsCloseRound(vm: SolverViewModel) {
+        repeat(24) {
+            val s = vm.state.value
+            assertLive(s)
+            if (s.phase != StreetFlowPhase.VILLAIN_ACTION_STEPPER) return
+            val o = s.villainOptions.firstOrNull { it.kind == ActKind.CALL } ?: s.villainOptions.first { it.kind == ActKind.CHECK }
+            vm.villainAct(o); advanceUntilIdle()
+            if (vm.state.value.heroFoldPending) { vm.continueInHand(); advanceUntilIdle() }
+        }
+        error("betting round never closed: ${vm.state.value.history}")
+    }
+
+    @Test
+    fun customVillainSizesPreflopAndPostflopAreIdentifiedAndCloseTheRound() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "9s", "8s")
+        vm.setHeroPosition(Position.BB); advanceUntilIdle()
+        // UTG opens to a custom 2.7bb from the matrix.
+        vm.setCustomAmount(2.7); vm.assignSeatCustom(); advanceUntilIdle()
+        var s = vm.state.value
+        assertNull(s.error)
+        assertEquals("P UTG raise 2.7bb", s.history.last())
+        assertEquals(2.7, s.streetMaxBetBb, 1e-9)
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        s = vm.state.value
+        assertNotNull("hero's VS_RFI node identified", s.heroCommittedKey)
+        assertOracle(s)
+        if (s.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(3, s.cardsNeeded)
+        assertEquals(2.7 + 2.7 + 0.5, s.potBb, 1e-9)
+        // Flop: hero (BB) acts first OOP and is auto-assumed; check so UTG can lead a custom size.
+        pickCards(vm, "Th", "7c", "2d")
+        s = vm.state.value
+        assertEquals(TableStreet.FLOP, s.street)
+        assertOracle(s)
+        if (s.heroCommittedKey != "CHECK") { vm.overrideHeroAction("CHECK"); advanceUntilIdle() }
+        assertEquals("UTG", vm.state.value.toAct)
+        vm.setCustomAmount(4.3); vm.villainCustom(); advanceUntilIdle()
+        s = vm.state.value
+        assertNull(s.error)
+        assertTrue(s.history.contains("F UTG bet 4.3bb"))
+        // Hero's facing-bet node is solved and assumed at once; the round then closes when everyone answers.
+        assertNotNull(s.heroCommittedKey)
+        assertTrue(s.options.any { it.kind == ActKind.CALL } && s.options.any { it.kind == ActKind.FOLD })
+        villainsCloseRound(vm)
+        s = vm.state.value
+        assertTrue(s.phase == StreetFlowPhase.DEAL_BOARD_CARDS || s.phase == StreetFlowPhase.HAND_COMPLETE)
+        if (s.phase == StreetFlowPhase.DEAL_BOARD_CARDS) assertEquals(1, s.cardsNeeded)
+    }
+
+    @Test
+    fun customVillainRaiseOverHeroBetReopensAndClosesTheStreet() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ah", "Kd")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()
+        if (vm.state.value.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        pickCards(vm, "Kh", "8c", "4d")
+        var s = vm.state.value
+        // CO checks to hero, hero is assumed; force a bet so CO can check-raise to a custom size.
+        vm.villain("Check"); advanceUntilIdle()
+        s = vm.state.value
+        val bet = s.options.firstOrNull { it.kind == ActKind.BET } ?: error("no hero bet option in ${s.options.map { it.key }}")
+        if (s.heroCommittedKey != bet.key) { vm.overrideHeroAction(bet.key); advanceUntilIdle() }
+        s = vm.state.value
+        assertEquals("CO", s.toAct)
+        val heroBet = s.streetMaxBetBb
+        assertTrue(heroBet > 0.0)
+        assertTrue("CO faces the bet", s.villainOptions.any { it.kind == ActKind.CALL } && s.villainOptions.none { it.kind == ActKind.CHECK })
+        val raiseTo = StreetFlowStateMachine.round1(heroBet * 3.4)
+        vm.setCustomAmount(raiseTo); vm.villainCustom(); advanceUntilIdle()
+        s = vm.state.value
+        assertNull(s.error)
+        assertTrue(s.history.contains("F CO raise ${StreetFlowStateMachine.fmt(raiseTo)}"))
+        assertNotNull("hero re-solved facing the check-raise", s.heroCommittedKey)
+        villainsCloseRound(vm)
+        s = vm.state.value
+        assertTrue(s.phase == StreetFlowPhase.DEAL_BOARD_CARDS || s.phase == StreetFlowPhase.HAND_COMPLETE)
+    }
+
+    @Test
+    fun foldClosureAndAllInRunOutNeverStall() = runTest(dispatcher) {
+        // Everyone folds to hero's open: the hand is won and complete.
+        var vm = vm()
+        pickCards(vm, "Ks", "Kd")
+        vm.setHeroPosition(Position.UTG); advanceUntilIdle()
+        if (vm.state.value.heroCommittedKey != "RAISE") { vm.overrideHeroAction("RAISE"); advanceUntilIdle() }
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        var s = vm.state.value
+        assertEquals(StreetFlowPhase.HAND_COMPLETE, s.phase)
+        assertEquals(listOf("UTG"), s.seats.filter { it.inHand }.map { it.label })
+        assertNull(s.error)
+
+        // Villain jams, hero calls: the board runs out to showdown with no betting step left.
+        vm = vm()
+        pickCards(vm, "Ah", "Ad")
+        vm.setHeroPosition(Position.CO); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()                 // UTG
+        vm.selectMatrixSeat(Position.HJ); advanceUntilIdle()
+        vm.assign("All-In"); advanceUntilIdle()                    // HJ jams 100bb
+        s = vm.state.value
+        assertNotNull(s.heroCommittedKey)
+        if (s.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()   // BTN, SB, BB, UTG fold
+        s = vm.state.value
+        assertEquals(listOf("MP", "CO"), s.seats.filter { it.inHand }.map { it.label })
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertLive(s)
+        pickCards(vm, "2c", "7d", "9h")
+        s = vm.state.value
+        assertEquals(TableStreet.FLOP, s.street)
+        assertEquals("flop auto-closed (all-in run-out)", StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(1, s.cardsNeeded)
+        assertLive(s)
+        pickCards(vm, "Jc")
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, vm.state.value.phase)
+        pickCards(vm, "3s")
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.HAND_COMPLETE, s.phase)
+        assertEquals(TableStreet.SHOWDOWN, s.street)
+        assertEquals(5, s.boardIds.size)
+        assertEquals(0.5 + 1.0 + 2.5 + 2 * 100.0, s.potBb, 1e-9)
+    }
+
+    @Test
+    fun shortStackAllInBelowTheBetIsAnAllInCall() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Qc", "Jc")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        vm.selectSeat(Position.HJ); vm.setEffectiveStack(5.0); vm.selectSeat(Position.HJ); advanceUntilIdle()
+        vm.setCustomAmount(6.0); vm.assignSeatCustom(); advanceUntilIdle()   // UTG opens to 6bb
+        var s = vm.state.value
+        assertEquals("MP", s.actingSeat)
+        val jam = s.villainOptions.single { it.label.startsWith("All-In") }
+        assertEquals(ActKind.CALL, jam.kind)
+        assertEquals(5.0, jam.toAmount, 1e-9)
+        assertTrue("no raise option with 5bb behind 6bb", s.villainOptions.none { it.kind == ActKind.RAISE || it.kind == ActKind.ALL_IN })
+        vm.assignSeatAction(jam); advanceUntilIdle()
+        s = vm.state.value
+        assertNull(s.error)
+        assertTrue(s.seats.first { it.label == "MP" }.allIn)
+        assertEquals(6.0, s.streetMaxBetBb, 1e-9)
+        // The state machine treats a raw ALL_IN below the maximum the same way.
+        val raw = StreetFlowStateMachine.act(
+            StreetFlowStateMachine.act(
+                StreetFlowStateMachine.setHeroPosition(StreetFlowStateMachine.withStacks(
+                    StreetFlowStateMachine.pickHeroCard(StreetFlowStateMachine.pickHeroCard(StreetFlowStateMachine.newHand(100.0), 0), 1),
+                    listOf(100.0, 5.0, 100.0, 100.0, 100.0, 100.0)), Position.BTN),
+                ActKind.RAISE, 6.0),
+            ActKind.ALL_IN)
+        assertTrue(raw.seat(Position.HJ).allIn)
+        assertEquals(5.0, raw.seat(Position.HJ).streetInvest, 1e-9)
+        assertEquals(6.0, raw.maxBet, 1e-9)
+        assertEquals(Position.CO, raw.toAct)
+    }
+
+    @Test
+    fun undoAndBoardInputResyncTurnOracleAndHeroDecision() = runTest(dispatcher) {
+        val vm = vm()
+        pickCards(vm, "Ac", "Qc")
+        vm.setHeroPosition(Position.BTN); advanceUntilIdle()
+        vm.selectMatrixSeat(Position.CO); advanceUntilIdle()
+        vm.assign("Open 2.5"); advanceUntilIdle()
+        if (vm.state.value.heroCommittedKey != "CALL") { vm.overrideHeroAction("CALL"); advanceUntilIdle() }
+        vm.advancePreflopAssumingRemainingFold(); advanceUntilIdle()
+        var s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        // Partial flop: still dealing, no betting pointer.
+        pickCards(vm, "Kd", "7s")
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase); assertEquals(1, s.cardsNeeded); assertNull(s.toAct)
+        pickCards(vm, "2h")
+        s = vm.state.value
+        // CO is OOP vs BTN: CO opens the flop action; hero's node is previewed.
+        assertEquals(TableStreet.FLOP, s.street)
+        assertEquals("CO", s.toAct)
+        assertOracle(s)
+        assertTrue(s.oraclePreview)
+        vm.villain("Check"); advanceUntilIdle()
+        s = vm.state.value
+        val assumed = s.heroCommittedKey
+        assertNotNull(assumed)
+        assertTrue(s.heroOverridable)
+        // A villain answer confirms hero's action; Undo brings back the same changeable hero decision.
+        assertLive(s)
+        if (s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) {
+            val before = s
+            val o = s.villainOptions.first()
+            vm.villainAct(o); advanceUntilIdle()
+            assertFalse(vm.state.value.heroOverridable)
+            vm.undo(); advanceUntilIdle()
+            s = vm.state.value
+            assertEquals(before.toAct, s.toAct)
+            assertEquals(before.history, s.history)
+            assertEquals(assumed, s.heroCommittedKey)
+            assertTrue("hero decision changeable again after Undo", s.heroOverridable)
+            assertOracle(s)
+        }
+        // Undo back to the flop deal: the board card is removed and the pointer returns to the deal step.
+        vm.undo(); advanceUntilIdle()     // CO check
+        s = vm.state.value
+        assertEquals("CO", s.toAct)
+        assertTrue(s.history.none { it.startsWith("F ") })
+        vm.undo(); advanceUntilIdle()     // third flop card
+        s = vm.state.value
+        assertEquals(StreetFlowPhase.DEAL_BOARD_CARDS, s.phase)
+        assertEquals(2, s.boardIds.size)
+        assertEquals(1, s.cardsNeeded)
+        assertNull(s.toAct)
+        // Re-dealing a different card re-opens the flop with CO to act and a fresh node.
+        pickCards(vm, "3h")
+        s = vm.state.value
+        assertEquals(TableStreet.FLOP, s.street)
+        assertEquals("CO", s.toAct)
+        assertOracle(s)
+        assertLive(s)
+    }
 }

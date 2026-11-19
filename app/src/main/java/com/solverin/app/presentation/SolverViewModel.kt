@@ -9,6 +9,7 @@ import com.solverin.engine.math.PipelineBufferPool
 import com.solverin.engine.pipeline.HandPipelineEngine
 import com.solverin.engine.preflop.IsoRaiseInterceptor
 import com.solverin.engine.preflop.PreflopEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +40,22 @@ class SolverViewModel(
     private var profile = VillainProfilePreset.POPULATION
     private var tableStack = initialStackBb
     private var flow = StreetFlowStateMachine.newHand(tableStack)
-    private val undoStack = ArrayDeque<FlowState>()
+
+    /**
+     * One undo step: the table plus hero's changeable decision at that moment (snapshot, committed option, solved node,
+     * implicit-fold chain), so Undo returns to exactly the same node instead of a baked-in hero action.
+     */
+    private class UndoEntry(
+        val flow: FlowState,
+        val heroSnapshot: FlowState?,
+        val committedKey: String?,
+        val result: OracleResult?,
+        val heroChain: Boolean,
+        val stake: Stake,
+        val profile: VillainProfilePreset,
+    )
+
+    private val undoStack = ArrayDeque<UndoEntry>()
     /** Table state right before hero's assumed action (null = no changeable hero action). */
     private var heroSnapshot: FlowState? = null
     private var committedKey: String? = null
@@ -94,7 +110,12 @@ class SolverViewModel(
         val restack = { s: FlowState -> StreetFlowStateMachine.withStacks(s, stacks) }
         val r = runCatching { restack(flow) }
         if (r.isFailure) { fail(r.exceptionOrNull()?.message ?: "Stack inválido"); return }
-        for (i in undoStack.indices) undoStack[i] = runCatching { restack(undoStack[i]) }.getOrDefault(undoStack[i])
+        for (i in undoStack.indices) {
+            val e = undoStack[i]
+            // A restacked step keeps hero's decision but drops the solved node: Undo re-solves it.
+            undoStack[i] = UndoEntry(runCatching { restack(e.flow) }.getOrDefault(e.flow),
+                e.heroSnapshot?.let { h -> runCatching { restack(h) }.getOrDefault(h) }, e.committedKey, null, e.heroChain, e.stake, e.profile)
+        }
         val snap = heroSnapshot
         if (snap != null) {
             heroSnapshot = restack(snap)
@@ -143,7 +164,7 @@ class SolverViewModel(
     fun editHeroCard(index: Int) {
         if (flow.phase != StreetFlowPhase.PICK_HERO_POSITION && flow.phase != StreetFlowPhase.PICK_HERO_CARDS) { fail("Las cartas del héroe se bloquean al empezar la mano"); return }
         if (index !in flow.heroCards.indices) return
-        undoStack.addLast(flow)
+        undoStack.addLast(entry(flow))
         flow = flow.copy(heroCards = flow.heroCards.filterIndexed { i, _ -> i != index }, phase = StreetFlowPhase.PICK_HERO_CARDS)
         error = null
         publish()
@@ -152,13 +173,14 @@ class SolverViewModel(
     /** Quick edit of board card [index]: re-deal it if no action was registered after it. */
     fun editBoardCard(index: Int) {
         if (index !in flow.board.indices) return
-        val target = undoStack.lastOrNull { it.board.size == index && it.phase == StreetFlowPhase.DEAL_BOARD_CARDS }
-        if (target == null || flow.history.size != target.history.size) { fail("Hay acciones después de esa carta: usa Undo"); return }
+        val target = undoStack.lastOrNull { it.flow.board.size == index && it.flow.phase == StreetFlowPhase.DEAL_BOARD_CARDS }
+        if (target == null || flow.history.size != target.flow.history.size) { fail("Hay acciones después de esa carta: usa Undo"); return }
         cancelCompute()
         while (undoStack.isNotEmpty() && undoStack.last() !== target) undoStack.removeLast()
-        flow = undoStack.removeLast()
-        heroSnapshot = null; committedKey = null; error = null
-        publish()
+        flow = undoStack.removeLast().flow
+        heroSnapshot = null; committedKey = null; error = null; heroChain = false; matrixSeat = null; autoAdvance = false
+        resetCustom()
+        settle(null)
     }
 
     // ---- table input ------------------------------------------------------------------------------------------
@@ -277,15 +299,25 @@ class SolverViewModel(
         return false
     }
 
+    /**
+     * Restores the previous input step together with hero's decision at that step: an auto-assumed hero action becomes
+     * changeable again, and the node is re-solved when stake / profile / stacks changed since.
+     */
     fun undo() {
-        if (undoStack.isEmpty()) return
+        val e = undoStack.removeLastOrNull() ?: return
         cancelCompute()
-        flow = undoStack.removeLast()
-        heroSnapshot = null; committedKey = null; error = null; pickerRank = null
-        matrixSeat = null; autoAdvance = false; heroChain = false
+        flow = e.flow
+        heroSnapshot = e.heroSnapshot; committedKey = e.committedKey; result = e.result; heroChain = e.heroChain
+        error = null; pickerRank = null; matrixSeat = null; autoAdvance = false
         resetCustom()
-        settle(null)
+        when {
+            heroSnapshot == null -> settle(null)
+            result == null || e.stake != stake || e.profile != profile -> reSolve()
+            else -> publish()
+        }
     }
+
+    private fun entry(f: FlowState) = UndoEntry(f, heroSnapshot, committedKey, result, heroChain, stake, profile)
 
     // ---- internals --------------------------------------------------------------------------------------------
 
@@ -315,12 +347,12 @@ class SolverViewModel(
         if (computing && flow.toAct == flow.heroPosition && flow.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER) { fail("Resolviendo la acción del héroe"); return }
         val next = try { transition(flow) } catch (e: IllegalArgumentException) { fail(e.message ?: "Entrada ilegal"); return } catch (e: IllegalStateException) { fail(e.message ?: "Entrada ilegal"); return }
         cancelCompute()
-        undoStack.addLast(flow)
+        undoStack.addLast(entry(flow))
         var settled = next
         val last = next.history.lastOrNull()
         if (chainRaisedPot && last != null && !last.isHero && last.aggressive && last.street == TableStreet.PREFLOP && last.raiseLevel >= 2) {
             val folded = StreetFlowStateMachine.foldNonParticipantsUntilHero(next)
-            if (folded !== next) { undoStack.addLast(next); settled = folded }
+            if (folded !== next) { undoStack.addLast(UndoEntry(next, null, null, null, false, stake, profile)); settled = folded }
         }
         while (undoStack.size > MAX_UNDO) undoStack.removeFirst()
         flow = settled
@@ -334,11 +366,16 @@ class SolverViewModel(
         customAmount = customBounds()?.first ?: 2.0
     }
 
-    private fun heroNeedsOracle(s: FlowState): Boolean =
-        s.heroPosition != null && s.heroCards.size == 2 && !s.heroFolded && s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER
+    /** Hero still has a decision on this street: seated, live, not all-in, betting round open. */
+    private fun heroNeedsOracle(s: FlowState): Boolean {
+        val hero = s.heroPosition ?: return false
+        return s.heroCards.size == 2 && !s.heroFolded && !s.seat(hero).allIn && s.stackLeft(hero) > 0.0 &&
+            s.phase == StreetFlowPhase.VILLAIN_ACTION_STEPPER
+    }
 
     /** After every input: solve hero's node; when hero is to act, assume the Max-EV action ([preferKey] = keep a deviation). */
     private fun settle(preferKey: String?) {
+        // No decision left for hero (board to deal, hand over, hero all-in): the banner keeps the last solved node.
         if (!heroNeedsOracle(flow)) { publish(); return }
         val snapshot = flow
         val gen = ++generation
@@ -346,7 +383,13 @@ class SolverViewModel(
         computing = true
         publish()
         job = viewModelScope.launch {
-            val r = withContext(computeDispatcher) { oracle.compute(snapshot, st, pr) }
+            val r = try {
+                withContext(computeDispatcher) { oracle.compute(snapshot, st, pr) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                safeFallback(snapshot)
+            }
             if (gen != generation) return@launch
             computing = false
             result = r
@@ -373,7 +416,33 @@ class SolverViewModel(
             resetCustom()
             return
         }
+        // Empty / illegal node: deterministic check-or-fold so the pointer never stays on hero.
+        val fallback = safeFallback(snapshot)
+        result = fallback
+        for (o in fallback.options) {
+            val applied = runCatching { StreetFlowStateMachine.act(snapshot, o.kind, o.toAmount, isHero = true) }.getOrNull() ?: continue
+            heroSnapshot = snapshot; committedKey = o.key; flow = applied
+            resetCustom()
+            return
+        }
         error = "Sin acción legal para el héroe"
+    }
+
+    /**
+     * Deterministic last-resort node (engine failure or no legal option): CHECK when nothing is owed, otherwise FOLD as
+     * the recommendation with CALL kept as the continue option (EV = −amount owed, the price of continuing blind).
+     */
+    private fun safeFallback(s: FlowState): OracleResult {
+        val hero = requireNotNull(s.heroPosition)
+        val invested = s.seat(hero).streetInvest
+        val toCall = s.toCall(hero)
+        val cap = invested + s.stackLeft(hero)
+        val options = if (toCall <= 1e-9) listOf(OracleOption("CHECK", "Check", 1f, 0.0, ActKind.CHECK, invested))
+        else listOf(
+            OracleOption("FOLD", "Fold", 1f, 0.0, ActKind.FOLD, invested),
+            OracleOption("CALL", "Call ${StreetFlowStateMachine.fmt(minOf(s.maxBet, cap))}", 0f, -minOf(toCall, cap - invested), ActKind.CALL, minOf(s.maxBet, cap)),
+        )
+        return OracleResult("${s.street.name} · nodo de respaldo", options, true, 0.0)
     }
 
     /** Re-solves the current node (stake / stack / profile change); a pending hero action is re-assumed. */

@@ -38,6 +38,9 @@ fun SuitVectorIcon(suit: Suit, modifier: Modifier = Modifier, tint: Color = suit
     }
 }
 
+/** Diamond rhombus on the unit square (top, right, bottom, left): straight sides, centred at (0.5, 0.5). */
+internal val DIAMOND_VERTICES: List<Offset> = listOf(Offset(0.5f, 0.03f), Offset(0.84f, 0.5f), Offset(0.5f, 0.97f), Offset(0.16f, 0.5f))
+
 private fun suitPath(suit: Suit, s: Float): Path {
     fun x(v: Float) = v * s
     return Path().apply {
@@ -51,11 +54,10 @@ private fun suitPath(suit: Suit, s: Float): Path {
                 close()
             }
             Suit.DIAMONDS -> {
-                moveTo(x(0.5f), x(0.03f))
-                quadraticBezierTo(x(0.70f), x(0.30f), x(0.88f), x(0.5f))
-                quadraticBezierTo(x(0.70f), x(0.70f), x(0.5f), x(0.97f))
-                quadraticBezierTo(x(0.30f), x(0.70f), x(0.12f), x(0.5f))
-                quadraticBezierTo(x(0.30f), x(0.30f), x(0.5f), x(0.03f))
+                // Pure rhombus: four straight, equal sides, symmetric about both axes (no curves, no glyph).
+                val v = DIAMOND_VERTICES
+                moveTo(x(v[0].x), x(v[0].y))
+                for (i in 1 until v.size) lineTo(x(v[i].x), x(v[i].y))
                 close()
             }
             Suit.SPADES -> {
