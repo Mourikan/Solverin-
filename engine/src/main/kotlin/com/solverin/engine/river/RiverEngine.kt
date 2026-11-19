@@ -137,7 +137,7 @@ class RiverSession(val spot: RiverSpot) {
         val call = arrayOfNulls<RiverEvTerms>(Combos.COUNT)
         val raise = arrayOfNulls<RiverEvTerms>(Combos.COUNT)
         val fF = FloatArray(Combos.COUNT); val fC = FloatArray(Combos.COUNT); val fR = FloatArray(Combos.COUNT)
-        fun foldAllowed(h: Int) = !(minBet && (call[h]!!.equity >= potOdds || call[h]!!.ev > 0.0))
+        fun foldAllowed(h: Int) = !MdfFloor.minBetFoldForbidden(minBet, call[h]!!.equity, potOdds, call[h]!!.ev)
         for (h in heroIdx) {
             val c = m.call(h, bet)
             val r = m.raise(h, bet)

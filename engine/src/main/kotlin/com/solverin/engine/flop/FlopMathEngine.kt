@@ -418,6 +418,8 @@ class FlopMathEngine(
         val xResp = extraModel!!.respondToBet(extraNodeRange!!, potBefore, c)
         val xr = xResp.probabilities(h)
         val hu = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
+        // Drawing dead vs the bettor (who stays in every branch): no continuation wins anything, the call is lost.
+        if (hu.equity < MdfFloor.MIN_LIVE_EQUITY) return deadSandwich(hu, c)
         val xCall = xResp.call
         val mw = calledMulti(h, betRange, xCall, potBefore + 2 * c, c, stack - c, aggressor = false)
         val pc = xr[0] + xr[1]
@@ -431,6 +433,11 @@ class FlopMathEngine(
             ev = pc * calledEv + xr[2] * evR,
         )
     }
+
+    private fun deadSandwich(hu: Branch, c: Double) = FlopEvTerms(
+        pFold = 0.0, pCall = 1.0, pRaise = 0.0, foldWin = 0.0, equity = hu.equity, realization = if (hu.allIn) 1f else 0f, potTotal = hu.potTotal,
+        investment = c, rake = 0.0, implied = 0.0, evVsRaise = -c, calledEv = -c, allIn = hu.allIn, ev = -c,
+    )
 
     /** Hero calls a third player's squeeze jam (bettor folds): all-in vs the squeeze range, relative to the node. */
     private fun squeezeCall(h: Int, potBefore: Double, squeezeRange: FloatArray): Double {

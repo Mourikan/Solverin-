@@ -589,6 +589,8 @@ class TurnMathEngine(
         val xResp = extraModel!!.respondToBet(extraNodeRange!!, potBefore, c)
         val xr = xResp.probabilities(h)
         val hu = called(h, betRange, potBefore + c, c, stack - c, aggressor = false)
+        // Drawing dead vs the bettor (who stays in every branch): no continuation wins anything, the call is lost.
+        if (hu.equity < MdfFloor.MIN_LIVE_EQUITY) return deadSandwich(hu, c)
         val mw = calledMulti(h, betRange, xResp.call, potBefore + 2 * c, c, stack - c, aggressor = false)
         val pc = xr[0] + xr[1]
         val calledEv = if (pc > 0) (xr[0] * hu.value + xr[1] * mw.value) / pc else 0.0
@@ -596,6 +598,11 @@ class TurnMathEngine(
         val evR = if (xr[2] > 0 && stack > 0.0) maxOf(-c, calledMulti(h, null, xResp.raise, potBefore + 2 * stack, stack, 0.0, aggressor = false).value) else -c
         return terms(0.0, pc, xr[2], 0.0, hu, calledEv, evR, needsImplied(h, betRange, hu, c, potBefore))
     }
+
+    private fun deadSandwich(hu: Branch, c: Double) = TurnEvTerms(
+        pFold = 0.0, pCall = 1.0, pRaise = 0.0, foldWin = 0.0, equity = hu.equity, realization = if (hu.allIn) 1f else 0f, potTotal = hu.potTotal,
+        investment = c, rake = 0.0, impliedRiver = 0.0, rioPenalty = 0.0, evVsRaise = -c, calledEv = -c, allIn = hu.allIn, ev = -c,
+    )
 
     fun raiseVsBet(h: Int, potBefore: Double, bet: Double, betRange: FloatArray): TurnEvTerms {
         val to = raiseTo(bet, potBefore)

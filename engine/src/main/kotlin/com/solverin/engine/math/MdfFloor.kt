@@ -22,6 +22,13 @@ object MdfFloor {
         callEv.isFinite() && equity >= MIN_LIVE_EQUITY &&
             callEv >= -(if (minBet) MAX_FORCED_LOSS_BB else minOf(MAX_LOSS_SHARE * toCall, MAX_FORCED_LOSS_BB))
 
+    /**
+     * Min-bet guard: folding is forbidden when the call is +EV, or when hero has the pot odds AND the call costs at most
+     * MAX_FORCED_LOSS_BB (a sandwich / reverse-implied loss above that is never forced by the price alone).
+     */
+    fun minBetFoldForbidden(minBet: Boolean, equity: Float, potOdds: Double, callEv: Double): Boolean =
+        minBet && (callEv > 0.0 || (equity >= potOdds && callEv >= -MAX_FORCED_LOSS_BB))
+
     /** Applies the floor in place; returns the fold ceiling actually reached (≥ [maxFold] when hands were ineligible). */
     fun enforce(
         heroIdx: List<Int>, w: FloatArray, maxFold: Double, fold: FloatArray, call: FloatArray, toCall: Double, minBet: Boolean,

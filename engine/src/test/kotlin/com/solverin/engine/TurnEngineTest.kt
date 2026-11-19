@@ -41,7 +41,8 @@ object TurnInvariants {
             }
             if (a.minBet) {
                 val c = a.terms(TurnAction.CALL, k)!!
-                if (c.equity >= a.potOdds!!) assertEquals(0f, a.frequency(TurnAction.FOLD, k), 1e-6f, "$tag min-bet no-fold ${Combos.name(k)}")
+                if (com.solverin.engine.math.MdfFloor.minBetFoldForbidden(true, c.equity, a.potOdds!!, c.ev))
+                    assertEquals(0f, a.frequency(TurnAction.FOLD, k), 1e-6f, "$tag min-bet no-fold ${Combos.name(k)}")
             }
         }
         a.betSizeBb?.let { assertTrue(it <= stack + 1e-9 && it > 0.0, "$tag bet ≤ stack") }

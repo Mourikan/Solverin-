@@ -166,7 +166,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             // ThreeFlushTurnBrake: no raise vs a big bet with a braked hand (pot control: call / fold).
             val brakeRaise = bet >= p.brakeBigBet * pot && m.braked(h, betRange)
             // Min-bet guard: with pot-odds equity, or a +EV call once implied odds count, a fold is never allowed.
-            val foldAllowed = !(minBet && (c.equity >= potOdds || c.ev > 0.0))
+            val foldAllowed = !MdfFloor.minBetFoldForbidden(minBet, c.equity, potOdds, c.ev)
             // Max-exploit draw rule: below direct pot odds a call is authorised only if direct + implied − RIO > 0.
             // Four-flush shield: no all-in call without a flush card.
             val callEv = if (foldAllowed && ((c.drawNeedsImplied && c.ev <= 0.0) || (c.allIn && m.shielded(h)))) Double.NEGATIVE_INFINITY else c.ev
@@ -188,7 +188,7 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             priority = { m.semiBluffPriority(it, cont) },
-            foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
+            foldAllowed = { !MdfFloor.minBetFoldForbidden(minBet, call[it]!!.equity, potOdds, call[it]!!.ev) },
             exempt = { h -> (overrideOpen(m, raiseOverfolds) && m.exploitEligible(h, cont) &&
                 (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= overrideThreshold(p, potBefore)).also { if (it) firedR[h] = true } },
         )
@@ -197,13 +197,13 @@ class TurnSession(val spot: TurnSpot, policy: TurnPolicy = TurnPolicy()) {
             TurnBluffCap.capTotal(
                 heroIdx, m.hero, if (connected) p.checkRaiseCapConnected else p.checkRaiseCap, fRaise, fCall, fFold, capped,
                 aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
-                foldAllowed = { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) },
+                foldAllowed = { !MdfFloor.minBetFoldForbidden(minBet, call[it]!!.equity, potOdds, call[it]!!.ev) },
                 protect = { m.eqVs(cont).equity(it) >= 0.5f || m.isNut(it) },
             )
         }
         for (h in heroIdx) if (jamGuardedR[h]) capped[h] = true
         fourFlushShield(m, heroIdx, fRaise, fCall, fFold, capped, { call[it]!!.ev },
-            { !(minBet && (call[it]!!.equity >= potOdds || call[it]!!.ev > 0.0)) })
+            { !MdfFloor.minBetFoldForbidden(minBet, call[it]!!.equity, potOdds, call[it]!!.ev) })
         val mdf = pot / (pot + bet)
         val mdfFloor = when {
             minBet -> 1 - mdf

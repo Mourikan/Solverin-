@@ -38,7 +38,8 @@ object RiverInvariants {
             }
             if (a.minBet) {
                 val c = a.terms(RiverAction.CALL, k)!!
-                if (c.equity >= a.potOdds!! || c.ev > 0.0) assertEquals(0f, a.frequency(RiverAction.FOLD, k), 1e-6f, "$tag min-bet no-fold ${Combos.name(k)}")
+                if (com.solverin.engine.math.MdfFloor.minBetFoldForbidden(true, c.equity, a.potOdds!!, c.ev))
+                    assertEquals(0f, a.frequency(RiverAction.FOLD, k), 1e-6f, "$tag min-bet no-fold ${Combos.name(k)}")
             }
             val size = a.betSize(k)
             if (!size.isNaN()) assertTrue(size * spot.potBb <= stack + 1e-6, "$tag size ≤ stack")

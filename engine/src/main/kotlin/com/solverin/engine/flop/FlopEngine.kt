@@ -139,8 +139,8 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             val c = m.call(h, potBefore, bet, betRange)
             val r = if (bet < spot.effectiveStackBb) m.raiseVsBet(h, potBefore, bet, betRange) else null
             call[h] = c; raise[h] = r
-            // Min-bet guard: with pot-odds equity a fold is never allowed.
-            val foldAllowed = !(minBet && c.equity >= potOdds)
+            // Min-bet guard: a +EV call, or pot-odds equity at a bounded cost, is never folded.
+            val foldAllowed = !MdfFloor.minBetFoldForbidden(minBet, c.equity, potOdds, c.ev)
             if (r != null && JamGuard.suicidal(r.allIn, r.equity, r.pFold, m.outs[h])) jamGuardedR[h] = true
             val raiseEv = if (r == null || jamGuardedR[h]) Double.NEGATIVE_INFINITY else r.ev
             val mix = FlopEngine.mix(if (foldAllowed) 0.0 else Double.NEGATIVE_INFINITY, c.ev, raiseEv, p.mixBandBb)
@@ -155,7 +155,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
             heroIdx, m.hero, ratio, fRaise, fCall, fFold,
             aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
             isValue = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
-            foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+            foldAllowed = { !MdfFloor.minBetFoldForbidden(minBet, call[it]!!.equity, potOdds, call[it]!!.ev) },
             exempt = { h -> (!ctx.locks.nitRead && raiseResp.foldTotal / raiseResp.priorTotal >= 1 - m.villainModel.mdf(potBefore, raiseSize) + p.overrideOverfoldMargin &&
                 m.outs[h] >= p.exploitOverrideOuts &&
                 (raise[h]?.ev ?: Double.NEGATIVE_INFINITY) - maxOf(call[h]!!.ev, 0.0) >= maxOf(p.exploitOverrideBb, p.exploitOverridePotShare * potBefore))
@@ -168,7 +168,7 @@ class FlopSession(val spot: FlopSpot, stride: Int = FlopEquity.FAST_STRIDE) {
                 heroIdx, m.hero, if (connected) p.checkRaiseCapConnected else p.checkRaiseCap,
                 fRaise, fCall, fFold, capped,
                 aggEv = { raise[it]?.ev ?: Double.NEGATIVE_INFINITY }, passiveEv = { call[it]!!.ev },
-                foldAllowed = { !(minBet && call[it]!!.equity >= potOdds) },
+                foldAllowed = { !MdfFloor.minBetFoldForbidden(minBet, call[it]!!.equity, potOdds, call[it]!!.ev) },
                 protect = { m.eqVs(raiseResp.continueRange).equity(it) >= 0.5f || m.isNut(it) },
             )
         }
