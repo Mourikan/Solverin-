@@ -1,5 +1,6 @@
 package com.solverin.engine.river
 
+import com.solverin.engine.math.MdfFloor
 import com.solverin.engine.flop.Combos
 import com.solverin.engine.flop.Draws
 import com.solverin.engine.math.PipelineBufferPool
@@ -497,9 +498,14 @@ class RiverMathEngine(
             val mw = eqMw * fin3 - b - rake(fin3, eqMw.toDouble())
             val pc = w.pFold + w.pCall
             val called = if (pc > 0) (w.pFold * hu + w.pCall * mw) / pc else 0.0
-            // Squeeze behind: hero folds (−b) or calls the squeeze all-in vs the squeezer's raise range (bettor folds).
-            val finSq = potBefore + b + 2 * stack
-            val sq = if (stack > b) w.eqRaise * finSq - stack - rake(finSq, w.eqRaise.toDouble()) else Double.NEGATIVE_INFINITY
+            // Drawing dead vs the bettor (who stays in every branch): the call is lost whatever the third player does.
+            if (eq < MdfFloor.MIN_LIVE_EQUITY) return RiverEvTerms(0.0, 1.0, 0.0, 0.0, eq, fin, b, 0.0, -b, -b, b >= stack, -b,
+                b, Double.NaN, blk.nutBlocker(h), blk.foldBlocker(h))
+            // Squeeze behind: hero folds (−b) or calls the squeeze all-in; the bettor stays in, so hero needs equity vs
+            // both the bettor's range and the squeezer's raise range (3-way all-in pot).
+            val eqSq = fieldEquity(listOf(eq, w.eqRaise))
+            val finSq = potBefore + 3 * stack
+            val sq = if (stack > b) eqSq * finSq - stack - rake(finSq, eqSq.toDouble()) else Double.NEGATIVE_INFINITY
             val evR = maxOf(-b, sq)
             return RiverEvTerms(0.0, pc, w.pRaise, 0.0, eq, fin, b, rk, evR, called, b >= stack, pc * called + w.pRaise * evR,
                 b, Double.NaN, blk.nutBlocker(h), blk.foldBlocker(h))
